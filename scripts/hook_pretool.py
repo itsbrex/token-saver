@@ -1,4 +1,16 @@
 #!/usr/bin/env python3
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """PreToolUse hook for Claude Code.
 
 Reads JSON from stdin, rewrites compressible commands to go through wrap.py.
@@ -15,27 +27,26 @@ import sys
 # Ensure the extension root is importable (scripts/ -> plugin root)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.chain_utils import CHAIN_SPLIT_RE, split_chain
-from src.console import use_utf8_io
-from src.shell_syntax import (
-    has_output_redirection,
-    has_shell_construct_open,
-    has_unquoted,
-    has_unquoted_background_operator,
-    has_unquoted_newline,
-)
+# Installed hooks must locate their sibling packages before importing them.
+# pylint: disable=wrong-import-position
+import src.chain_utils
+import src.console
+import src.shell_syntax
 
-# --- Debug logging (writes to data_dir/hook.log when TOKEN_SAVER_DEBUG=true) ---
+# --- Debug logging (writes to data_dir/hook.log when TOKEN_SAVER_DEBUG=true)
+# ---
 _log = logging.getLogger("token-saver.hook_pretool")
 _log.setLevel(logging.DEBUG)
 _debug = os.environ.get("TOKEN_SAVER_DEBUG", "").lower() in ("1", "true", "yes")
 if _debug:
-    from src import data_dir as _data_dir
+    import src
 
-    _log_dir = _data_dir()
+    _log_dir = src.data_dir()
     os.makedirs(_log_dir, exist_ok=True)
     _handler = logging.FileHandler(os.path.join(_log_dir, "hook.log"))
-    _handler.setFormatter(logging.Formatter("%(asctime)s [%(name)s] %(levelname)s: %(message)s"))
+    _handler.setFormatter(
+        logging.Formatter("%(asctime)s [%(name)s] %(levelname)s: %(message)s")
+    )
     _log.addHandler(_handler)
 else:
     _log.addHandler(logging.NullHandler())
@@ -45,30 +56,35 @@ else:
 def _load_compressible_patterns() -> list[str]:
     """Import hook_patterns from the processor registry."""
     # Add extension root to path so we can import the src package
-    _this_dir = os.path.dirname(os.path.abspath(__file__))
-    _extension_root = os.path.dirname(_this_dir)
-    _log.debug("this_dir=%s, extension_root=%s", _this_dir, _extension_root)
-    if _extension_root not in sys.path:
-        sys.path.insert(0, _extension_root)
-    from src.processors import collect_hook_patterns  # noqa: PLC0415
+    this_dir = os.path.dirname(os.path.abspath(__file__))
+    extension_root = os.path.dirname(this_dir)
+    _log.debug("this_dir=%s, extension_root=%s", this_dir, extension_root)
+    if extension_root not in sys.path:
+        sys.path.insert(0, extension_root)
+    # Load plugins inside the failure boundary so failures cannot block Bash.
+    # pylint: disable=import-outside-toplevel
+    from src import processors  # noqa: PLC0415
 
-    patterns = collect_hook_patterns()
+    patterns = processors.collect_hook_patterns()
     _log.debug("Loaded %d compressible patterns", len(patterns))
     return patterns
 
 
-try:
-    COMPRESSIBLE_PATTERNS = _load_compressible_patterns()
-except Exception:
-    # Fail open, like every other error path in this project.  A broken
-    # processor — most likely a user one under ~/.token-saver/processors/ —
-    # must not take down *every* Bash command in the session.  With no
-    # patterns loaded nothing matches, so commands run unwrapped.
-    _log.exception("Failed to load compressible patterns — compression disabled")
-    COMPRESSIBLE_PATTERNS = []
+def _available_patterns() -> list[str]:
+    """Return discovered patterns, or disable compression on plugin failure."""
+    try:
+        return _load_compressible_patterns()
+    except Exception:  # pylint: disable=broad-exception-caught
+        # A broken user plugin must not prevent Bash commands from running.
+        _log.warning(
+            "Failed to load compressible patterns — compression disabled"
+        )
+        return []
 
 
-def _compile_patterns(patterns: list[str]) -> tuple[list[str], list[re.Pattern]]:
+def _compile_patterns(
+    patterns: list[str],
+) -> tuple[list[str], list[re.Pattern]]:
     """Compile patterns one by one, dropping (and logging) any invalid one.
 
     Returns the sources and the compiled patterns as two parallel lists, so
@@ -80,14 +96,16 @@ def _compile_patterns(patterns: list[str]) -> tuple[list[str], list[re.Pattern]]
     for p in patterns:
         try:
             compiled.append(re.compile(p))
-        except re.error:  # noqa: PERF203 — per-pattern isolation is the point, ~50 items once
-            _log.exception("Skipping invalid hook pattern %r", p)
+        except re.error:  # noqa: PERF203 — isolate each plugin pattern
+            _log.warning("Skipping an invalid hook pattern")
         else:
             sources.append(p)
     return sources, compiled
 
 
-COMPRESSIBLE_PATTERNS, COMPILED_PATTERNS = _compile_patterns(COMPRESSIBLE_PATTERNS)
+COMPRESSIBLE_PATTERNS, COMPILED_PATTERNS = _compile_patterns(
+    _available_patterns()
+)
 
 # Trailing pipe suffixes that are safe to wrap.
 # These are stripped before checking exclusions so commands like
@@ -125,8 +143,11 @@ _STREAMING_EXCLUDED_PATTERNS = [
     r"^\s*journalctl\b[^|]*\s-[a-zA-Z]*f\b",  # journalctl -f
     r"\b(kubectl|oc)\b[^|]*\blogs\b[^|]*\s-[a-zA-Z]*f\b",  # kubectl/oc logs -f
     r"\bdocker\b[^|]*\blogs\b[^|]*\s-[a-zA-Z]*f\b",  # docker logs -f
-    r"^\s*docker\s+stats\b(?![^|]*--no-stream)",  # docker stats (live by default)
-    r"^\s*docker(\s+compose|-compose)\s+up\b(?![^|]*\s-d\b)",  # compose up (attached)
+    # Docker stats streams by default.
+    r"^\s*docker\s+stats\b(?![^|]*--no-stream)",
+    (
+        "^\\s*docker(\\s+compose|-compose)\\s+up\\b(?![^|]*\\s-d\\b)"
+    ),  # compose up (attached)
     r"\s--watch(=|\s|$)",  # generic --watch flag (vitest, jest, tsc, etc.)
     r"\s--watchAll\b",  # jest --watchAll
     r"^\s*(npx\s+)?vitest\b(?![^|]*\brun\b)",  # vitest defaults to watch mode
@@ -137,11 +158,12 @@ _STREAMING_EXCLUDED_PATTERNS = [
 EXCLUDED_PATTERNS = [
     r"(?<!['\"])\|(?!['\"])",  # unquoted pipe (complex pipelines)
     r"^\s*(vi|vim|nano|emacs|code)\b",
-    r"^\s*ssh\s+(?:-\S+\s+)*\S+\s*$",  # interactive ssh only (no remote command)
+    r"^\s*ssh\s+(?:-\S+\s+)*\S+\s*$",  # interactive ssh only
     r"^\s*rsync\b.*\S+:\S+",  # only exclude remote rsync (host:path)
     r"(?:^|\s)token[-_]saver\s",  # avoid wrapping token-saver CLI itself
     # Recursion guard: our rewrite is `python3 <…>wrap.py '<cmd>'`.  Match
-    # wrap.py only in script-execution position so `cat wrap.py` stays wrappable.
+    # wrap.py only in script-execution position so `cat wrap.py` stays
+    # wrappable.
     r"(?:^|\s)(?:\S*/)?(?:python\d?(?:\.\d+)*|node|ruby|sh|bash|zsh|perl)\s+"
     r"(?:-\S+\s+)*\S*wrap\.py\b",
     r"^\s*\.?\S*/?wrap\.py\b",
@@ -149,8 +171,11 @@ EXCLUDED_PATTERNS = [
     r"^\s*sudo\b",  # never wrap sudo
     r"^\s*env\s+\S+=",  # env VAR=val prefix — too complex to wrap
     # Interactive-flag REPLs even with script args (e.g. `python -i script.py`).
-    r"^\s*(python\d?(?:\.\d+)*|ipython|node|ruby|perl|ghci|deno|php|lua|R|bash|sh|zsh)"
-    r"\s+(?:-\S*i\S*|--interactive)(\s|$)",
+    (
+        "^\\s*(python\\d?(?:\\.\\d+)*|ipython|node|ruby|perl|"
+        "ghci|deno|php|lua|R|bash|sh|zsh)\\s+(?:-\\S*i\\S*|-"
+        "-interactive)(\\s|$)"
+    ),
     *_STREAMING_EXCLUDED_PATTERNS,
 ]
 
@@ -181,8 +206,11 @@ _DANGEROUS_CONSTRUCTS = ("$(", "`", "<<")
 # Both checks now share the single quote-aware scanner in src.shell_syntax,
 # alongside the chain splitters.  Re-exported under the historical names so
 # the rest of this module (and its tests) read unchanged.
-_has_unquoted_construct = has_unquoted
-_has_output_redirection = has_output_redirection
+# Preserve the historical callable aliases used by external hook integrations.
+# pylint: disable=invalid-name
+_has_unquoted_construct = src.shell_syntax.has_unquoted
+_has_output_redirection = src.shell_syntax.has_output_redirection
+# pylint: enable=invalid-name
 
 
 # Per-segment safety checks applied inside _is_chain_compressible().
@@ -204,13 +232,18 @@ _SEGMENT_EXCLUDED_PATTERNS = [
     r"^\s*(python\d?(?:\.\d+)*|ipython|node|bash|sh|zsh|ruby|irb|pry|gdb|lldb"
     r"|mongo|mongosh|redis-cli|psql|mysql|sqlite3|php|perl|lua|R)\s*$",
     # Interactive-flag REPLs: -i drops into REPL even with other args.
-    r"^\s*(python\d?(?:\.\d+)*|ipython|node|ruby|perl|ghci|deno|php|lua|R|bash|sh|zsh)"
-    r"\s+(?:-\S*i\S*|--interactive)(\s|$)",
+    (
+        "^\\s*(python\\d?(?:\\.\\d+)*|ipython|node|ruby|perl|"
+        "ghci|deno|php|lua|R|bash|sh|zsh)\\s+(?:-\\S*i\\S*|-"
+        "-interactive)(\\s|$)"
+    ),
     *_STREAMING_EXCLUDED_PATTERNS,
 ]
 
 # Same defense-in-depth rationale as COMPILED_EXCLUDED above.
-_COMPILED_SEGMENT_EXCLUDED = [re.compile(p, re.MULTILINE) for p in _SEGMENT_EXCLUDED_PATTERNS]
+_COMPILED_SEGMENT_EXCLUDED = [
+    re.compile(p, re.MULTILINE) for p in _SEGMENT_EXCLUDED_PATTERNS
+]
 
 
 # Commands whose *output* is perfectly compressible, but which must never be
@@ -238,22 +271,28 @@ _DESTRUCTIVE_PATTERNS = [
     r"\b(?:terraform|tofu)\s+(?:apply|destroy)\b",
     r"\bdocker\b[^\n]*\b(?:system\s+prune|volume\s+rm|rmi)\b",
     r"\b(?:docker|podman)\s+rm\b",
-    r"\brm\s+[^\n]*-[a-zA-Z]*[rR][a-zA-Z]*f|\brm\s+[^\n]*-[a-zA-Z]*f[a-zA-Z]*[rR]",  # rm -rf / -fr
+    (
+        "\\brm\\s+[^\\n]*-[a-zA-Z]*[rR][a-zA-Z]*f|\\brm\\s+[^\\"
+        "n]*-[a-zA-Z]*f[a-zA-Z]*[rR]"
+    ),  # rm -rf / -fr
 ]
 
-_COMPILED_DESTRUCTIVE = [re.compile(p, re.MULTILINE) for p in _DESTRUCTIVE_PATTERNS]
+_COMPILED_DESTRUCTIVE = [
+    re.compile(p, re.MULTILINE) for p in _DESTRUCTIVE_PATTERNS
+]
 
 
 def is_destructive(command: str) -> bool:
-    """Return True if the command is irreversible enough that auto-approving
-    it would defeat the user's own permission rules.
+    """Identify commands whose auto-approval would bypass permission rules.
 
     Checked separately from :func:`is_compressible`: such a command may well
     be compressible, but must not be rewritten, because rewriting is what
     emits ``permissionDecision: "allow"``.
     """
     norm = _normalize_cmd(command)
-    return any(p.search(command) or p.search(norm) for p in _COMPILED_DESTRUCTIVE)
+    return any(
+        p.search(command) or p.search(norm) for p in _COMPILED_DESTRUCTIVE
+    )
 
 
 def _ends_with_line_continuation(segment: str) -> bool:
@@ -270,7 +309,7 @@ def _ends_with_line_continuation(segment: str) -> bool:
 
 
 def _is_comment_only(segment: str) -> bool:
-    """Return True if the segment is nothing but a shell comment.
+    r"""Return True if the segment is nothing but a shell comment.
 
     Such a segment would produce an empty brace group (``{ # foo\\n}``), which
     is a syntax error.  Today it also silently comments out the rest of the
@@ -290,14 +329,14 @@ def _is_segment_safe(segment: str) -> bool:
     # A backgrounded segment (`npm run dev &`) detaches from wrap.py's
     # subprocess entirely — nothing to compress, and the timeout can never
     # reclaim a process it no longer has a handle on.
-    if has_unquoted_background_operator(segment):
+    if src.shell_syntax.has_unquoted_background_operator(segment):
         return False
     # An opening fragment of a for/while/if/case/... compound statement is
     # not a real, independent segment: the chain splitter only saw one of
     # its internal `;`s.  Wrapping it in its own brace group is a shell
     # syntax error, so the whole command — every segment, not just this
     # one — must be declined.  See has_shell_construct_open's docstring.
-    if has_shell_construct_open(segment):
+    if src.shell_syntax.has_shell_construct_open(segment):
         return False
     # Both break wrap.py's brace-group rewrite — see the helpers above.
     if _ends_with_line_continuation(segment) or _is_comment_only(segment):
@@ -318,14 +357,18 @@ def _is_chain_compressible(command: str) -> bool:
     in wrap.py's per-segment compression).  Safe trailing pipes are only
     stripped from the *last* segment.
     """
-    segments = split_chain(command)
+    segments = src.chain_utils.split_chain(command)
     if not segments:
         return False
 
     has_compressible = False
     for i, seg in enumerate(segments):
         # Only strip safe trailing pipe from the last segment
-        check_seg = _SAFE_TRAILING_PIPE_RE.sub("", seg) if i == len(segments) - 1 else seg
+        check_seg = (
+            _SAFE_TRAILING_PIPE_RE.sub("", seg)
+            if i == len(segments) - 1
+            else seg
+        )
         if not _is_segment_safe(check_seg):
             return False
         norm_seg = _normalize_cmd(check_seg)
@@ -360,7 +403,7 @@ def is_compressible(command: str) -> bool:
     # only splits on && / ;), so a hidden second line bypasses every
     # per-segment safety check below AND has its output silently discarded
     # by wrap.py, which only ever compresses the first line as "the" command.
-    if has_unquoted_newline(cmd):
+    if src.shell_syntax.has_unquoted_newline(cmd):
         return False
 
     # Reject commands with unquoted $(), backticks, or heredocs — these break
@@ -371,7 +414,7 @@ def is_compressible(command: str) -> bool:
 
     # Detect chains (&&, ;) BEFORE stripping safe trailing pipes,
     # so that mid-chain pipes are not accidentally stripped.
-    if CHAIN_SPLIT_RE.search(cmd):
+    if src.chain_utils.CHAIN_SPLIT_RE.search(cmd):
         return _is_chain_compressible(cmd)
 
     # Output redirections (quote-aware) are never wrapped.
@@ -380,7 +423,7 @@ def is_compressible(command: str) -> bool:
 
     # A backgrounded command (`npm run dev &`) detaches immediately; there is
     # no output to compress and no way for wrap.py's timeout to reclaim it.
-    if has_unquoted_background_operator(cmd):
+    if src.shell_syntax.has_unquoted_background_operator(cmd):
         return False
 
     # Single command — strip safe trailing pipes for exclusion check only
@@ -391,25 +434,29 @@ def is_compressible(command: str) -> bool:
     for pattern in COMPILED_EXCLUDED:
         if pattern.search(check_cmd) or pattern.search(norm_cmd):
             return False
-    return any(pattern.search(check_cmd) for pattern in COMPILED_PATTERNS) or any(
-        pattern.search(norm_cmd) for pattern in COMPILED_PATTERNS
-    )
+    return any(
+        pattern.search(check_cmd) for pattern in COMPILED_PATTERNS
+    ) or any(pattern.search(norm_cmd) for pattern in COMPILED_PATTERNS)
 
 
 def _matched_exclusion(check_cmd: str, norm_cmd: str) -> str | None:
     """Return the source regex of the first exclusion that matches, if any."""
-    for src, pattern in zip(EXCLUDED_PATTERNS, COMPILED_EXCLUDED, strict=False):
+    for source, pattern in zip(
+        EXCLUDED_PATTERNS, COMPILED_EXCLUDED, strict=False
+    ):
         if pattern.search(check_cmd) or pattern.search(norm_cmd):
-            return src
+            return source
     return None
 
 
 def _matched_compressible(check_cmd: str, norm_cmd: str) -> list[str]:
     """Return source regexes of all compressible patterns that match."""
     matched = []
-    for src, pattern in zip(COMPRESSIBLE_PATTERNS, COMPILED_PATTERNS, strict=False):
+    for source, pattern in zip(
+        COMPRESSIBLE_PATTERNS, COMPILED_PATTERNS, strict=False
+    ):
         if pattern.search(check_cmd) or pattern.search(norm_cmd):
-            matched.append(src)
+            matched.append(source)
     return matched
 
 
@@ -435,11 +482,13 @@ def explain_decision(command: str) -> dict:
         return result
 
     if re.search(r"(?<!['\"])\|\|(?!['\"])", cmd):
-        result["reason"] = "contains '||' (error-recovery chains are not wrapped)"
+        result["reason"] = (
+            "contains '||' (error-recovery chains are not wrapped)"
+        )
         result["excluded_by"] = r"||"
         return result
 
-    if has_unquoted_newline(cmd):
+    if src.shell_syntax.has_unquoted_newline(cmd):
         result["reason"] = "contains an unquoted newline (multiple statements)"
         result["excluded_by"] = "unquoted newline"
         return result
@@ -449,12 +498,12 @@ def explain_decision(command: str) -> dict:
         result["excluded_by"] = "dangerous shell construct"
         return result
 
-    if CHAIN_SPLIT_RE.search(cmd):
+    if src.chain_utils.CHAIN_SPLIT_RE.search(cmd):
         result["is_chain"] = True
         compressible = _is_chain_compressible(cmd)
         result["compressible"] = compressible
         seen: list[str] = []
-        for seg in split_chain(cmd):
+        for seg in src.chain_utils.split_chain(cmd):
             check_seg = _SAFE_TRAILING_PIPE_RE.sub("", seg)
             norm_seg = _normalize_cmd(check_seg)
             for p in _matched_compressible(check_seg, norm_seg):
@@ -473,7 +522,7 @@ def explain_decision(command: str) -> dict:
         result["excluded_by"] = "output redirection"
         return result
 
-    if has_unquoted_background_operator(cmd):
+    if src.shell_syntax.has_unquoted_background_operator(cmd):
         result["reason"] = "contains an unquoted '&' (backgrounded command)"
         result["excluded_by"] = "background operator"
         return result
@@ -498,7 +547,8 @@ def explain_decision(command: str) -> dict:
 
 
 def main():
-    use_utf8_io()
+    """Read one hook request and emit its command-rewrite decision as JSON."""
+    src.console.use_utf8_io()
     try:
         raw_input = sys.stdin.read()
         _log.debug("stdin: %s", raw_input[:500])
@@ -529,7 +579,9 @@ def main():
         sys.exit(0)
 
     # Build path to wrap.py (same directory)
-    wrap_py = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wrap.py")
+    wrap_py = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "wrap.py"
+    )
     if not os.path.isfile(wrap_py):
         _log.warning("wrap.py not found at %s", wrap_py)
         sys.exit(0)  # Fail open — don't break the command
@@ -539,11 +591,19 @@ def main():
     # the rewritten command so it propagates to the wrap.py subprocess.
     cc_session = input_data.get("session_id", "")
 
-    # Rewrite: pass the original command as a single quoted argument to avoid injection
+    # Rewrite: pass the original command as a single quoted argument to avoid
+    # injection
     python = "python" if os.name == "nt" else "python3"
-    session_prefix = f"TOKEN_SAVER_SESSION={shlex.quote(cc_session)} " if cc_session else ""
-    new_command = f"{session_prefix}{python} {shlex.quote(wrap_py)} {shlex.quote(command)}"
-    _log.debug("Rewriting: %r -> %r (session=%s)", command, new_command, cc_session)
+    session_prefix = (
+        f"TOKEN_SAVER_SESSION={shlex.quote(cc_session)} " if cc_session else ""
+    )
+    new_command = (
+        f"{session_prefix}{python} {shlex.quote(wrap_py)} "
+        f"{shlex.quote(command)}"
+    )
+    _log.debug(
+        "Rewriting: %r -> %r (session=%s)", command, new_command, cc_session
+    )
 
     result = {
         "hookSpecificOutput": {

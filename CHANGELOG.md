@@ -5,6 +5,30 @@ All notable changes to token-saver are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Portable `compress` stdin filter with captured exit-status routing, JSON output and estimated token-budget checks.
+- Offline `replay` quality contracts: per-case and aggregate budgets, minimum savings, literal diagnostic preservation, and content-free CI reports. Includes a runnable fixture manifest.
+- Scoped `AGENTS.md` contributor guidance and documentation of architecture and quality gates.
+- Documentation build and SEO checks in CI, an automatic sitemap, and reference pages for all 36 processors.
+
+### Changed
+
+- Align Python source, hooks, installers, examples, and tests with the Google
+  Python Style Guide: absolute module imports, 80-column formatting, useful
+  API documentation, and simple comprehensions. Add the vendored Google Pylint
+  configuration and structural style checks to CI; document scoped exceptions
+  and contributor guidance in `AGENTS.md` and `CONTRIBUTING.md`.
+- Separated processor registration from discovery and made engine processors and policy injectable while preserving default behavior.
+- Qualified output-savings and information-preservation claims, corrected site licensing, and refreshed the sourced comparison.
+
+### Fixed
+
+- Prevented critical-line recovery and compression fallback from restoring already-redacted secret values; small environment outputs now redact sensitive assignments too.
+- Resolved savings database paths per tracker instance and honored `TOKEN_SAVER_DB_DIR` consistently, with tests isolated from the developer profile.
+
 ## [2.7.2] - 2026-08-09
 
 ### Added

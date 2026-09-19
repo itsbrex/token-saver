@@ -1,4 +1,16 @@
-"""Tests for the shared compression core (src/core.py) and the Antigravity hook."""
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Test shared compression and the Antigravity hook."""
 
 import json
 import os
@@ -8,8 +20,8 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import src.tracker
 from src import core
-from src.tracker import SavingsTracker
 
 REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -48,10 +60,12 @@ class TestCompress:
 class TestRecording:
     def setup_method(self):
         self.tmp_dir = tempfile.mkdtemp()
-        self._orig_dir = SavingsTracker.DB_DIR
-        self._orig_path = SavingsTracker.DB_PATH
-        SavingsTracker.DB_DIR = self.tmp_dir
-        SavingsTracker.DB_PATH = os.path.join(self.tmp_dir, "savings.db")
+        self._orig_dir = src.tracker.SavingsTracker.DB_DIR
+        self._orig_path = src.tracker.SavingsTracker.DB_PATH
+        src.tracker.SavingsTracker.DB_DIR = self.tmp_dir
+        src.tracker.SavingsTracker.DB_PATH = os.path.join(
+            self.tmp_dir, "savings.db"
+        )
 
     def teardown_method(self):
         db = os.path.join(self.tmp_dir, "savings.db")
@@ -59,8 +73,8 @@ class TestRecording:
             if os.path.exists(f):
                 os.remove(f)
         os.rmdir(self.tmp_dir)
-        SavingsTracker.DB_DIR = self._orig_dir
-        SavingsTracker.DB_PATH = self._orig_path
+        src.tracker.SavingsTracker.DB_DIR = self._orig_dir
+        src.tracker.SavingsTracker.DB_PATH = self._orig_path
 
     def test_record_result_records_saving(self):
         result = core.CompressResult(
@@ -73,7 +87,7 @@ class TestRecording:
             compressed_len=20,
         )
         core.record_result(result, "git status", "antigravity_cli")
-        tracker = SavingsTracker(session_id="any")
+        tracker = src.tracker.SavingsTracker(session_id="any")
         lifetime = tracker.get_lifetime_stats()
         assert lifetime["commands"] == 1
         assert lifetime["original"] == 100
@@ -90,7 +104,7 @@ class TestRecording:
             compressed_len=95,
         )
         core.record_result(result, "docker ps", "antigravity_cli")
-        tracker = SavingsTracker(session_id="any")
+        tracker = src.tracker.SavingsTracker(session_id="any")
         rows = tracker.get_processor_mismatches()
         assert len(rows) == 1
         assert rows[0]["processor"] == "docker"

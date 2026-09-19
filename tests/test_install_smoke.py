@@ -1,3 +1,15 @@
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """End-to-end smoke test for install.py against a sandboxed HOME.
 
 The installer is the project's primary distribution path and the only code
@@ -77,15 +89,24 @@ def home(tmp_path):
 
 def test_install_claude_populates_a_usable_tree(home):
     result = _run_installer(home, "--target", "claude")
-    assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    assert result.returncode == 0, (
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
     assert "Installation complete" in result.stdout
 
     core = _data_dir(home)
     # The engine and the processor package must both be present: a previous
     # release shipped an install missing src/core.py, which broke wrap.py at
     # import time and was invisible to the mocked tests.
-    for rel in ("src/engine.py", "src/core.py", "src/config.py", "src/processors/__init__.py"):
-        assert os.path.isfile(os.path.join(core, rel)), f"missing {rel} in {core}"
+    for rel in (
+        "src/engine.py",
+        "src/core.py",
+        "src/config.py",
+        "src/processors/__init__.py",
+    ):
+        assert os.path.isfile(os.path.join(core, rel)), (
+            f"missing {rel} in {core}"
+        )
 
     # More processors than just the fallback made it across.
     processors = os.listdir(os.path.join(core, "src", "processors"))
@@ -114,14 +135,18 @@ def test_installed_tree_actually_compresses(home):
         timeout=60,
         check=False,
     )
-    assert proc.returncode == 0, f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+    assert proc.returncode == 0, (
+        f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+    )
     assert proc.stdout.split() == ["git", "True", "True"]
 
 
 def test_install_registers_the_hook(home):
     assert _run_installer(home, "--target", "claude").returncode == 0
     settings = os.path.join(_claude_dir(home), "settings.json")
-    plugins = os.path.join(_claude_dir(home), "plugins", "installed_plugins.json")
+    plugins = os.path.join(
+        _claude_dir(home), "plugins", "installed_plugins.json"
+    )
     assert os.path.isfile(settings) or os.path.isfile(plugins), (
         "installer registered neither settings.json nor installed_plugins.json"
     )
@@ -136,7 +161,9 @@ def test_uninstall_removes_what_install_created(home):
     assert os.path.isfile(core)
 
     result = _run_installer(home, "--uninstall")
-    assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    assert result.returncode == 0, (
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
     assert not os.path.exists(core), "uninstall left src/engine.py behind"
 
 
@@ -144,5 +171,7 @@ def test_install_is_idempotent(home):
     first = _run_installer(home, "--target", "claude")
     second = _run_installer(home, "--target", "claude")
     assert first.returncode == 0
-    assert second.returncode == 0, f"re-install failed:\n{second.stdout}\n{second.stderr}"
+    assert second.returncode == 0, (
+        f"re-install failed:\n{second.stdout}\n{second.stderr}"
+    )
     assert os.path.isfile(os.path.join(_data_dir(home), "src", "engine.py"))

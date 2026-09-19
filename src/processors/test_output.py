@@ -1,46 +1,88 @@
-"""Test runner output processor: pytest, jest, mocha, cargo test, go test, rspec, dotnet test."""
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Summarize test-runner output while retaining failures and totals."""
 
 import re
 
-from .. import config
-from .base import PYTHON_CMD, Processor
+from src import config
+from src.processors import base
 
 
-class TestOutputProcessor(Processor):
+class TestOutputProcessor(base.Processor):
+    """Summarize test runs while retaining failure blocks and totals."""
+
     priority = 21
     handles_failure = True
     hook_patterns = [
-        rf"^(pytest|py\.test|{PYTHON_CMD}\s+-m\s+pytest|jest|mocha|vitest|cargo\s+test|go\s+test|rspec|phpunit|bun\s+test|dotnet\s+test|swift\s+test|mix\s+test)\b",
+        (
+            rf"^(pytest|py\.test|{base.PYTHON_CMD}\s+-m\s+pytest|jest|mocha|"
+            rf"vitest|cargo\s+test|go\s+test|rspec|phpunit|bun\s+test|"
+            rf"dotnet\s+test|swift\s+test|mix\s+test)\b"
+        ),
         r"^(npm\s+test|yarn\s+test|pnpm\s+test)\b",
-        r"^(npx\s+(jest|mocha|vitest|playwright)\b|poetry\s+run\s+(pytest|py\.test)\b|uv\s+run\s+(pytest|py\.test)\b|pipx\s+run\s+pytest\b|bundle\s+exec\s+(rspec|rails\s+test)\b)",
+        (
+            r"^(npx\s+(jest|mocha|vitest|playwright)\b|poetry\s+run\s+(pytest|"
+            r"py\.test)\b|uv\s+run\s+(pytest|py\.test)\b|pipx\s+run\s+pytest\b|"
+            r"bundle\s+exec\s+(rspec|rails\s+test)\b)"
+        ),
     ]
 
     @property
     def name(self) -> str:
+        """The stable name used for processor routing and savings tracking."""
         return "test"
 
     def can_handle(self, command: str) -> bool:
+        """Return whether this processor supports the supplied command.
+
+        Args:
+            command: Shell command text used for routing.
+
+        Returns:
+            Whether the command matches this processor's supported tools.
+        """
         return bool(
             re.search(
-                rf"\b(pytest|py\.test|{PYTHON_CMD}\s+-m\s+pytest|jest|mocha|"
+                rf"\b(pytest|py\.test|{base.PYTHON_CMD}\s+-m\s+pytest|"
+                r"jest|mocha|"
                 r"cargo\s+test|go\s+test|rspec|phpunit|vitest|bun\s+test|"
                 r"npm\s+test|yarn\s+test|pnpm\s+test|"
                 r"dotnet\s+test|swift\s+test|mix\s+test|"
                 r"npx\s+(jest|mocha|vitest|playwright)|"
-                r"poetry\s+run\s+(pytest|py\.test)|uv\s+run\s+(pytest|py\.test)|"
+                r"poetry\s+run\s+(pytest|py\.test)|uv\s+run\s+(pytest|"
+                r"py\.test)|"
                 r"pipx\s+run\s+pytest|bundle\s+exec\s+(rspec|rails\s+test))\b",
                 command,
             )
         )
 
     def process(self, command: str, output: str) -> str:
+        """Compress captured output according to this processor's rules.
+
+        Args:
+            command: Original shell command used to select output handling.
+            output: Captured command output before this transformation.
+
+        Returns:
+            Compressed text, or the input when no safe reduction is available.
+        """
         if not output or not output.strip():
             return output
 
         lines = output.splitlines()
 
         if re.search(
-            rf"\bpytest\b|py\.test|{PYTHON_CMD}\s+-m\s+pytest"
+            rf"\bpytest\b|py\.test|{base.PYTHON_CMD}\s+-m\s+pytest"
             r"|\b(poetry|uv|pipx)\s+run\s+pytest",
             command,
         ):
@@ -81,6 +123,7 @@ class TestOutputProcessor(Processor):
         ]
 
     def _process_pytest(self, lines: list[str]) -> str:
+        """Retain pytest failures and totals while summarizing passes."""
         result = []
         in_failure = False
         in_warnings = False
@@ -88,14 +131,19 @@ class TestOutputProcessor(Processor):
         warning_lines: list[str] = []
         summary_lines = []
         passed_count = 0
-        param_tests: dict[str, dict] = {}  # base_name -> {"passed": int, "failed": [param]}
+        param_tests: dict[
+            str, dict
+        ] = {}  # base_name -> {"passed": int, "failed": [param]}
 
         for line in lines:
             # Skip collection output
             if re.match(r"^(collecting|collected)\s", line.strip()):
                 continue
             # Skip platform/rootdir/configfile lines
-            if re.match(r"^(platform|rootdir|configfile|plugins|cachedir)[\s:]", line.strip()):
+            if re.match(
+                r"^(platform|rootdir|configfile|plugins|cachedir)[\s:]",
+                line.strip(),
+            ):
                 continue
 
             # Detect FAILURES section
@@ -141,7 +189,11 @@ class TestOutputProcessor(Processor):
 
                 # End of failures block
                 if re.match(
-                    r"^=+ (short test summary|warnings summary|\d+ (failed|passed|error))", line
+                    (
+                        r"^=+ (short test summary|warnings summary|\d+ (failed|"
+                        r"passed|error))"
+                    ),
+                    line,
                 ):
                     in_failure = False
                     if failure_block:
@@ -167,9 +219,11 @@ class TestOutputProcessor(Processor):
                 # Track parameterized tests
                 m = re.match(r"^(\S+?)\[(.+)\]\s+PASSED", line.strip())
                 if m:
-                    base = m.group(1)
-                    param_tests.setdefault(base, {"passed": 0, "failed": []})
-                    param_tests[base]["passed"] += 1
+                    test_name = m.group(1)
+                    param_tests.setdefault(
+                        test_name, {"passed": 0, "failed": []}
+                    )
+                    param_tests[test_name]["passed"] += 1
                 continue
 
             # Keep FAILED/ERROR individual lines
@@ -177,16 +231,21 @@ class TestOutputProcessor(Processor):
                 # Track parameterized test failures
                 m = re.match(r"^(\S+?)\[(.+)\]\s+FAILED", line.strip())
                 if m:
-                    base = m.group(1)
+                    test_name = m.group(1)
                     param = m.group(2)
-                    param_tests.setdefault(base, {"passed": 0, "failed": []})
-                    param_tests[base]["failed"].append(param)
+                    param_tests.setdefault(
+                        test_name, {"passed": 0, "failed": []}
+                    )
+                    param_tests[test_name]["failed"].append(param)
                 else:
                     result.append(line)
                 continue
 
             # Keep final summary lines (skip "test session starts" header)
-            if re.match(r"^=+.*=+$", line) and "test session starts" not in line:
+            if (
+                re.match(r"^=+.*=+$", line)
+                and "test session starts" not in line
+            ):
                 summary_lines.append(line)
                 continue
 
@@ -202,7 +261,7 @@ class TestOutputProcessor(Processor):
             result.extend(self._truncate_traceback(failure_block))
 
         # Add grouped summaries for parameterized tests with failures
-        for base, info in param_tests.items():
+        for test_name, info in param_tests.items():
             if info["failed"]:
                 total = info["passed"] + len(info["failed"])
                 failed_params = ", ".join(info["failed"][:5])
@@ -210,7 +269,8 @@ class TestOutputProcessor(Processor):
                 if len(info["failed"]) > 5:
                     extra = f", ... ({len(info['failed']) - 5} more)"
                 result.append(
-                    f"{base}: {info['passed']}/{total} passed, FAILED: [{failed_params}{extra}]"
+                    f"{test_name}: {info['passed']}/{total} passed, FAILED: "
+                    f"[{failed_params}{extra}]"
                 )
 
         if passed_count > 0:
@@ -231,7 +291,8 @@ class TestOutputProcessor(Processor):
         for i, line in enumerate(lines):
             stripped = line.strip()
             if coverage_start is None and (
-                re.match(r"^-+ coverage", stripped) or re.match(r"^Name\s+Stmts\s+Miss", stripped)
+                re.match(r"^-+ coverage", stripped)
+                or re.match(r"^Name\s+Stmts\s+Miss", stripped)
             ):
                 coverage_start = i
             if (
@@ -269,7 +330,9 @@ class TestOutputProcessor(Processor):
         if total_line:
             result.append(total_line)
         if low_coverage_files:
-            result.append(f"Files below 80% coverage ({len(low_coverage_files)}):")
+            result.append(
+                f"Files below 80% coverage ({len(low_coverage_files)}):"
+            )
             for f in low_coverage_files[:10]:
                 result.append(f"  {f}")
             if len(low_coverage_files) > 10:
@@ -281,7 +344,8 @@ class TestOutputProcessor(Processor):
         """Group warnings by type, show count + one example per type."""
         by_type: dict[str, list[str]] = {}
         for line in warning_lines:
-            # Extract warning type: "DeprecationWarning: ...", "UserWarning: ...", etc.
+            # Extract warning type: "DeprecationWarning: ...", "UserWarning:
+            # ...", etc.
             m = re.search(r"(\w+Warning):\s*(.+)", line)
             if m:
                 wtype = m.group(1)
@@ -298,7 +362,9 @@ class TestOutputProcessor(Processor):
         result = []
         total = sum(len(v) for v in by_type.values())
         parts = []
-        for wtype, instances in sorted(by_type.items(), key=lambda x: -len(x[1])):
+        for wtype, instances in sorted(
+            by_type.items(), key=lambda x: -len(x[1])
+        ):
             if wtype == "other":
                 continue
             parts.append(f"{wtype} x{len(instances)}")
@@ -311,6 +377,7 @@ class TestOutputProcessor(Processor):
         return result
 
     def _process_jest(self, lines: list[str]) -> str:
+        """Retain Jest failure blocks and summary counts, collapsing passes."""
         result = []
         in_failure = False
         passed_suites = 0
@@ -322,7 +389,9 @@ class TestOutputProcessor(Processor):
             stripped = line.strip()
 
             # Capture failure blocks
-            if re.search(r"\bFAIL\b", line) and not re.match(r"^(Tests?|Test Suites?):", stripped):
+            if re.search(r"\bFAIL\b", line) and not re.match(
+                r"^(Tests?|Test Suites?):", stripped
+            ):
                 in_failure = True
                 consecutive_blanks = 0
                 result.append(line)
@@ -342,7 +411,9 @@ class TestOutputProcessor(Processor):
                     consecutive_blanks = 0
                 continue
 
-            if re.search(r"\bPASS\b", line) and not re.match(r"^(Tests?|Test Suites?):", stripped):
+            if re.search(r"\bPASS\b", line) and not re.match(
+                r"^(Tests?|Test Suites?):", stripped
+            ):
                 passed_suites += 1
                 m = re.search(r"\((\d+)\s+tests?\)", line)
                 if m:
@@ -350,7 +421,9 @@ class TestOutputProcessor(Processor):
                 continue
 
             # Keep summary lines
-            if re.match(r"^(Tests?|Test Suites?|Snapshots?|Time|Ran all):", stripped):
+            if re.match(
+                r"^(Tests?|Test Suites?|Snapshots?|Time|Ran all):", stripped
+            ):
                 result.append(line)
 
         if failure_buffer:
@@ -362,6 +435,7 @@ class TestOutputProcessor(Processor):
         return "\n".join(result) if result else "\n".join(lines)
 
     def _process_cargo_test(self, lines: list[str]) -> str:
+        """Retain Rust test failures and totals while counting passing tests."""
         result = []
         in_failure = False
         ok_count = 0
@@ -390,7 +464,9 @@ class TestOutputProcessor(Processor):
                 continue
 
             # Skip compilation output
-            if re.match(r"^\s*(Compiling|Downloading|Running|Doc-tests)", stripped):
+            if re.match(
+                r"^\s*(Compiling|Downloading|Running|Doc-tests)", stripped
+            ):
                 continue
 
         if ok_count > 0:
@@ -399,6 +475,7 @@ class TestOutputProcessor(Processor):
         return "\n".join(result) if result else "\n".join(lines)
 
     def _process_go_test(self, lines: list[str]) -> str:
+        """Retain Go test failures and package summaries, collapsing passes."""
         result = []
         passed = 0
         in_failure = False
@@ -432,6 +509,7 @@ class TestOutputProcessor(Processor):
         return "\n".join(result) if result else "\n".join(lines)
 
     def _process_rspec(self, lines: list[str]) -> str:
+        """Retain RSpec failures and totals while removing progress dots."""
         result = []
         passed = 0
         in_failure = False
@@ -483,7 +561,8 @@ class TestOutputProcessor(Processor):
                 continue
 
             if (
-                stripped.startswith("Passed!") or re.search(r"\bPassed\b", stripped)
+                stripped.startswith("Passed!")
+                or re.search(r"\bPassed\b", stripped)
             ) and "test" not in stripped.lower():
                 passed += 1
                 continue
@@ -495,12 +574,16 @@ class TestOutputProcessor(Processor):
 
             if in_failure:
                 result.append(line)
-                if not stripped or re.match(r"^(Total|Passed|Failed|Skipped)\s", stripped):
+                if not stripped or re.match(
+                    r"^(Total|Passed|Failed|Skipped)\s", stripped
+                ):
                     in_failure = False
                 continue
 
             # Summary lines
-            if re.match(r"^(Total tests|Passed|Failed|Skipped|Test Run)", stripped):
+            if re.match(
+                r"^(Total tests|Passed|Failed|Skipped|Test Run)", stripped
+            ):
                 result.append(line)
 
         if passed > 0:
@@ -529,7 +612,9 @@ class TestOutputProcessor(Processor):
                 continue
 
             # Test suite summary
-            if re.match(r"^Test Suite", stripped) or re.match(r"^Executed \d+", stripped):
+            if re.match(r"^Test Suite", stripped) or re.match(
+                r"^Executed \d+", stripped
+            ):
                 result.append(line)
 
         if passed > 0:
@@ -580,16 +665,20 @@ class TestOutputProcessor(Processor):
         return "\n".join(result) if result else "\n".join(lines)
 
     def _process_generic_test(self, lines: list[str]) -> str:
+        """Retain recognized failure context and test summary lines."""
         result = []
         passed = 0
 
         for line in lines:
             lower = line.lower()
-            if any(kw in lower for kw in ["fail", "error", "assert", "exception", "traceback"]):
-                result.append(line)
-            elif any(kw in lower for kw in ["pass", "ok ", "success"]) or re.match(
-                r"^\s*(✓|✔)", line.strip()
+            if any(
+                kw in lower
+                for kw in ["fail", "error", "assert", "exception", "traceback"]
             ):
+                result.append(line)
+            elif any(
+                kw in lower for kw in ["pass", "ok ", "success"]
+            ) or re.match(r"^\s*(✓|✔)", line.strip()):
                 passed += 1
             elif re.match(r"^\d+\s+(tests?|specs?|examples?)", line.strip()):
                 result.append(line)

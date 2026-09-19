@@ -1,3 +1,15 @@
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Tests for the savings tracker and stats CLI."""
 
 import json
@@ -13,8 +25,8 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import src.tracker
 from src import config
-from src.tracker import SavingsTracker
 
 
 def _connection_is_open(conn) -> bool:
@@ -34,10 +46,14 @@ def _connection_is_open(conn) -> bool:
 class TestSavingsTracker:
     def setup_method(self):
         self.tmp_dir = tempfile.mkdtemp()
+        self.original_db_dir = src.tracker.SavingsTracker.DB_DIR
+        self.original_db_path = src.tracker.SavingsTracker.DB_PATH
         # Override DB path for testing
-        SavingsTracker.DB_DIR = self.tmp_dir
-        SavingsTracker.DB_PATH = os.path.join(self.tmp_dir, "test_savings.db")
-        self.tracker = SavingsTracker(session_id="test-session")
+        src.tracker.SavingsTracker.DB_DIR = self.tmp_dir
+        src.tracker.SavingsTracker.DB_PATH = os.path.join(
+            self.tmp_dir, "test_savings.db"
+        )
+        self.tracker = src.tracker.SavingsTracker(session_id="test-session")
 
     def teardown_method(self):
         self.tracker.close()
@@ -46,6 +62,8 @@ class TestSavingsTracker:
         # handle makes remove() raise WinError 32.  Neither is worth failing
         # teardown over — the temp dir is disposable.
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
+        src.tracker.SavingsTracker.DB_DIR = self.original_db_dir
+        src.tracker.SavingsTracker.DB_PATH = self.original_db_path
 
     def test_record_and_retrieve(self):
         self.tracker.record_saving(
@@ -81,7 +99,7 @@ class TestSavingsTracker:
         self.tracker.record_saving("cmd1", "git", 1000, 200, "claude_code")
 
         # Second session
-        tracker2 = SavingsTracker(session_id="session-2")
+        tracker2 = src.tracker.SavingsTracker(session_id="session-2")
         tracker2.record_saving("cmd2", "test", 500, 100, "antigravity_cli")
 
         lifetime = tracker2.get_lifetime_stats()
@@ -103,7 +121,9 @@ class TestSavingsTracker:
         assert "No compressions" in msg
 
     def test_format_stats_with_data(self):
-        self.tracker.record_saving("git status", "git", 5000, 500, "claude_code")
+        self.tracker.record_saving(
+            "git status", "git", 5000, 500, "claude_code"
+        )
         msg = self.tracker.format_stats_message()
         assert "[token-saver]" in msg
         assert "Lifetime" in msg
@@ -128,7 +148,9 @@ class TestSavingsTracker:
         assert stats["commands"] == 1
 
     def test_top_processors(self):
-        self.tracker.record_saving("git status", "git", 1000, 200, "claude_code")
+        self.tracker.record_saving(
+            "git status", "git", 1000, 200, "claude_code"
+        )
         self.tracker.record_saving("git diff", "git", 2000, 400, "claude_code")
         self.tracker.record_saving("pytest", "test", 500, 100, "claude_code")
         top = self.tracker.get_top_processors()
@@ -138,7 +160,9 @@ class TestSavingsTracker:
     def test_record_and_retrieve_mismatches(self):
         self.tracker.record_mismatch("docker ps", "docker", 1000, "claude_code")
         self.tracker.record_mismatch("docker ps", "docker", 1200, "claude_code")
-        self.tracker.record_mismatch("kubectl get pods", "kubectl", 800, "claude_code")
+        self.tracker.record_mismatch(
+            "kubectl get pods", "kubectl", 800, "claude_code"
+        )
         rows = self.tracker.get_processor_mismatches()
         assert len(rows) == 2
         assert rows[0]["processor"] == "docker"
@@ -150,8 +174,12 @@ class TestSavingsTracker:
 
     def test_top_commands_grouping_and_order(self):
         """get_top_commands groups by command and orders by total_saved DESC."""
-        self.tracker.record_saving("git status", "git", 1000, 200, "claude_code")
-        self.tracker.record_saving("git status", "git", 1000, 300, "claude_code")
+        self.tracker.record_saving(
+            "git status", "git", 1000, 200, "claude_code"
+        )
+        self.tracker.record_saving(
+            "git status", "git", 1000, 300, "claude_code"
+        )
         self.tracker.record_saving("git diff", "git", 5000, 1000, "claude_code")
         self.tracker.record_saving("pytest", "test", 500, 100, "claude_code")
         top = self.tracker.get_top_commands()
@@ -168,13 +196,17 @@ class TestSavingsTracker:
     def test_top_commands_limit(self):
         """get_top_commands respects the limit parameter."""
         for i in range(5):
-            self.tracker.record_saving(f"cmd-{i}", "test", 100 * (i + 1), 10, "claude_code")
+            self.tracker.record_saving(
+                f"cmd-{i}", "test", 100 * (i + 1), 10, "claude_code"
+            )
         top = self.tracker.get_top_commands(limit=3)
         assert len(top) == 3
 
     def test_top_commands_avg_ratio(self):
         """get_top_commands computes avg_ratio correctly."""
-        self.tracker.record_saving("git status", "git", 1000, 200, "claude_code")
+        self.tracker.record_saving(
+            "git status", "git", 1000, 200, "claude_code"
+        )
         top = self.tracker.get_top_commands()
         assert top[0]["avg_ratio"] == 80.0
 
@@ -185,11 +217,15 @@ class TestSavingsTracker:
         def write_records(n):
             try:
                 for i in range(20):
-                    self.tracker.record_saving(f"cmd-{n}-{i}", "test", 100, 50, "claude_code")
+                    self.tracker.record_saving(
+                        f"cmd-{n}-{i}", "test", 100, 50, "claude_code"
+                    )
             except Exception as e:
                 errors.append(e)
 
-        threads = [threading.Thread(target=write_records, args=(i,)) for i in range(4)]
+        threads = [
+            threading.Thread(target=write_records, args=(i,)) for i in range(4)
+        ]
         for t in threads:
             t.start()
         for t in threads:
@@ -203,22 +239,22 @@ class TestSavingsTracker:
         """TOKEN_SAVER_SESSION env var should set the session ID."""
         os.environ["TOKEN_SAVER_SESSION"] = "env-session-42"  # noqa: S105
         try:
-            tracker = SavingsTracker()
+            tracker = src.tracker.SavingsTracker()
             assert tracker.session_id == "env-session-42"
             tracker.close()
         finally:
             del os.environ["TOKEN_SAVER_SESSION"]
 
     def test_fallback_session_id_is_stable_across_instances(self):
-        """Without an explicit id or env var, all trackers in one process share an id.
+        """Share a process session ID when no explicit ID is configured.
 
         Each Bash command spawns a fresh wrap.py; a per-process random id would
         record every command as its own session.  The ppid-based fallback keeps
         commands from the same shell grouped together.
         """
         os.environ.pop("TOKEN_SAVER_SESSION", None)
-        t1 = SavingsTracker()
-        t2 = SavingsTracker()
+        t1 = src.tracker.SavingsTracker()
+        t2 = src.tracker.SavingsTracker()
         try:
             assert t1.session_id == t2.session_id
             assert t1.session_id.startswith("ppid-")
@@ -228,11 +264,11 @@ class TestSavingsTracker:
 
     def test_shared_session_aggregates(self):
         """Multiple trackers with the same session_id should aggregate."""
-        t1 = SavingsTracker(session_id="shared-session")
+        t1 = src.tracker.SavingsTracker(session_id="shared-session")
         t1.record_saving("git status", "git", 1000, 200, "claude_code")
         t1.close()
 
-        t2 = SavingsTracker(session_id="shared-session")
+        t2 = src.tracker.SavingsTracker(session_id="shared-session")
         t2.record_saving("git diff", "git", 2000, 400, "claude_code")
 
         stats = t2.get_session_stats()
@@ -249,11 +285,11 @@ class TestSavingsTracker:
 
     def test_session_stats_isolated(self):
         """Different session IDs should have independent stats."""
-        t1 = SavingsTracker(session_id="session-A")
+        t1 = src.tracker.SavingsTracker(session_id="session-A")
         t1.record_saving("cmd1", "git", 1000, 200, "claude_code")
         t1.close()
 
-        t2 = SavingsTracker(session_id="session-B")
+        t2 = src.tracker.SavingsTracker(session_id="session-B")
         t2.record_saving("cmd2", "test", 500, 100, "claude_code")
 
         a_stats = t2.get_session_stats("session-A")
@@ -272,11 +308,13 @@ class TestSavingsTracker:
         """If DB is corrupted, it should be recreated."""
         self.tracker.close()
         # Corrupt the DB file
-        with open(SavingsTracker.DB_PATH, "w", encoding="utf-8") as f:
+        with open(
+            src.tracker.SavingsTracker.DB_PATH, "w", encoding="utf-8"
+        ) as f:
             f.write("not a valid sqlite database")
 
         # Should recreate without error
-        tracker2 = SavingsTracker(session_id="recovery-test")
+        tracker2 = src.tracker.SavingsTracker(session_id="recovery-test")
         tracker2.record_saving("cmd", "test", 100, 50, "claude_code")
         stats = tracker2.get_session_stats()
         assert stats["commands"] == 1
@@ -296,41 +334,143 @@ class TestSavingsTracker:
         makes this catch the bug on Linux and macOS too.
         """
         self.tracker.close()
-        with open(SavingsTracker.DB_PATH, "w", encoding="utf-8") as f:
+        with open(
+            src.tracker.SavingsTracker.DB_PATH, "w", encoding="utf-8"
+        ) as f:
             f.write("not a valid sqlite database")
 
         open_at_delete = []
         real_remove = os.remove
 
         def spy_remove(path):
-            tracker = getattr(SavingsTracker, "_recovering", None)
+            tracker = getattr(src.tracker.SavingsTracker, "_recovering", None)
             if tracker is not None:
                 open_at_delete.append(_connection_is_open(tracker.conn))
             return real_remove(path)
 
-        original_remove_files = SavingsTracker._remove_db_files
+        original_remove_files = src.tracker.SavingsTracker._remove_db_files
 
         def traced_remove_files(inner_self):
-            SavingsTracker._recovering = inner_self
+            src.tracker.SavingsTracker._recovering = inner_self
             try:
                 return original_remove_files(inner_self)
             finally:
-                SavingsTracker._recovering = None
+                src.tracker.SavingsTracker._recovering = None
 
         with (
-            mock.patch.object(SavingsTracker, "_remove_db_files", traced_remove_files),
+            mock.patch.object(
+                src.tracker.SavingsTracker,
+                "_remove_db_files",
+                traced_remove_files,
+            ),
             mock.patch("src.tracker.os.remove", spy_remove),
         ):
-            tracker2 = SavingsTracker(session_id="recovery-order")
+            tracker2 = src.tracker.SavingsTracker(session_id="recovery-order")
 
         try:
-            assert open_at_delete, "recovery never tried to delete the corrupt database"
+            assert open_at_delete, (
+                "recovery never tried to delete the corrupt database"
+            )
             assert not any(open_at_delete), (
-                "the sqlite connection was still open when the file was unlinked — "
-                "Windows would refuse the delete and leave the corrupt DB in place"
+                "the sqlite connection was still open when the fi"
+                "le was unlinked — Windows would refuse the delet"
+                "e and leave the corrupt DB in place"
             )
         finally:
             tracker2.close()
+
+
+class TestTrackerPaths:
+    def test_environment_directory_applies_to_direct_tracker_users(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(src.tracker.SavingsTracker, "DB_DIR", None)
+        monkeypatch.setattr(src.tracker.SavingsTracker, "DB_PATH", None)
+        monkeypatch.setenv("TOKEN_SAVER_DB_DIR", str(tmp_path))
+
+        tracker = src.tracker.SavingsTracker(session_id="isolated")
+        try:
+            tracker.record_saving("git status", "git", 1000, 100, "claude_code")
+            assert tracker.get_session_stats()["saved"] == 900
+            assert tracker._db_path == str(tmp_path / "savings.db")
+            assert (tmp_path / "savings.db").is_file()
+        finally:
+            tracker.close()
+
+    def test_default_paths_are_resolved_for_each_instance(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(src.tracker.SavingsTracker, "DB_DIR", None)
+        monkeypatch.setattr(src.tracker.SavingsTracker, "DB_PATH", None)
+        first_dir = tmp_path / "first"
+        second_dir = tmp_path / "second"
+        monkeypatch.setenv("TOKEN_SAVER_DB_DIR", str(first_dir))
+        first = src.tracker.SavingsTracker(session_id="same-session")
+        try:
+            first.record_saving("git status", "git", 1000, 100, "claude_code")
+        finally:
+            first.close()
+
+        monkeypatch.setenv("TOKEN_SAVER_DB_DIR", str(second_dir))
+        second = src.tracker.SavingsTracker(session_id="same-session")
+        try:
+            assert second._db_path == str(second_dir / "savings.db")
+            assert second.get_lifetime_stats()["commands"] == 0
+            assert src.tracker.SavingsTracker.DB_DIR is None
+            assert src.tracker.SavingsTracker.DB_PATH is None
+        finally:
+            second.close()
+
+    def test_directory_override_controls_default_filename(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(src.tracker.SavingsTracker, "DB_DIR", str(tmp_path))
+        monkeypatch.setattr(src.tracker.SavingsTracker, "DB_PATH", None)
+        monkeypatch.setenv("TOKEN_SAVER_DB_DIR", str(tmp_path / "unused"))
+
+        tracker = src.tracker.SavingsTracker(session_id="directory-override")
+        try:
+            assert tracker._db_path == str(tmp_path / "savings.db")
+            assert not (tmp_path / "unused").exists()
+        finally:
+            tracker.close()
+
+    def test_stats_calls_do_not_retain_environment_paths(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        import src
+        from src import stats
+
+        monkeypatch.setattr(src.tracker.SavingsTracker, "DB_DIR", None)
+        monkeypatch.setattr(src.tracker.SavingsTracker, "DB_PATH", None)
+        monkeypatch.setattr(sys, "argv", ["stats", "--json"])
+        first_dir = tmp_path / "first"
+        second_dir = tmp_path / "second"
+        default_dir = tmp_path / "default"
+        monkeypatch.setattr(src, "data_dir", lambda: str(default_dir))
+        monkeypatch.setenv("TOKEN_SAVER_DB_DIR", str(first_dir))
+        tracker = src.tracker.SavingsTracker(session_id="stats-paths")
+        try:
+            tracker.record_saving("git status", "git", 1000, 100, "claude_code")
+        finally:
+            tracker.close()
+
+        stats.main()
+        assert json.loads(capsys.readouterr().out)["lifetime"]["commands"] == 1
+        assert src.tracker.SavingsTracker.DB_DIR is None
+        assert src.tracker.SavingsTracker.DB_PATH is None
+
+        monkeypatch.setenv("TOKEN_SAVER_DB_DIR", str(second_dir))
+        stats.main()
+        assert json.loads(capsys.readouterr().out)["lifetime"]["commands"] == 0
+        assert (second_dir / "savings.db").is_file()
+
+        monkeypatch.delenv("TOKEN_SAVER_DB_DIR")
+        stats.main()
+        assert json.loads(capsys.readouterr().out)["lifetime"]["commands"] == 0
+        assert (default_dir / "savings.db").is_file()
+        assert src.tracker.SavingsTracker.DB_DIR is None
+        assert src.tracker.SavingsTracker.DB_PATH is None
 
 
 class TestStatsCLI:
@@ -338,11 +478,13 @@ class TestStatsCLI:
 
     def setup_method(self):
         self.tmp_dir = tempfile.mkdtemp()
-        self.original_db_dir = SavingsTracker.DB_DIR
-        self.original_db_path = SavingsTracker.DB_PATH
+        self.original_db_dir = src.tracker.SavingsTracker.DB_DIR
+        self.original_db_path = src.tracker.SavingsTracker.DB_PATH
         # Use savings.db to match what stats.py creates via TOKEN_SAVER_DB_DIR
-        SavingsTracker.DB_DIR = self.tmp_dir
-        SavingsTracker.DB_PATH = os.path.join(self.tmp_dir, "savings.db")
+        src.tracker.SavingsTracker.DB_DIR = self.tmp_dir
+        src.tracker.SavingsTracker.DB_PATH = os.path.join(
+            self.tmp_dir, "savings.db"
+        )
         self.stats_script = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
             "src",
@@ -355,8 +497,8 @@ class TestStatsCLI:
             if os.path.exists(f):
                 os.remove(f)
         os.rmdir(self.tmp_dir)
-        SavingsTracker.DB_DIR = self.original_db_dir
-        SavingsTracker.DB_PATH = self.original_db_path
+        src.tracker.SavingsTracker.DB_DIR = self.original_db_dir
+        src.tracker.SavingsTracker.DB_PATH = self.original_db_path
 
     def _run_stats(self, *args):
         """Run stats.py and return stdout."""
@@ -373,7 +515,7 @@ class TestStatsCLI:
 
     def _seed_data(self):
         """Insert test data into the DB."""
-        tracker = SavingsTracker(session_id="test-stats")
+        tracker = src.tracker.SavingsTracker(session_id="test-stats")
         tracker.record_saving("git status", "git", 5000, 500, "claude_code")
         tracker.record_saving("pytest", "test", 3000, 800, "antigravity_cli")
         tracker.record_saving("git diff", "git", 10000, 2000, "claude_code")
@@ -439,29 +581,37 @@ class TestPruneRetention:
 
     def setup_method(self):
         self.tmp_dir = tempfile.mkdtemp()
-        SavingsTracker.DB_DIR = self.tmp_dir
-        SavingsTracker.DB_PATH = os.path.join(self.tmp_dir, "prune.db")
+        self.original_db_dir = src.tracker.SavingsTracker.DB_DIR
+        self.original_db_path = src.tracker.SavingsTracker.DB_PATH
+        src.tracker.SavingsTracker.DB_DIR = self.tmp_dir
+        src.tracker.SavingsTracker.DB_PATH = os.path.join(
+            self.tmp_dir, "prune.db"
+        )
 
     def teardown_method(self):
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
+        src.tracker.SavingsTracker.DB_DIR = self.original_db_dir
+        src.tracker.SavingsTracker.DB_PATH = self.original_db_path
 
     def test_retention_defaults_to_the_configured_value(self, monkeypatch):
-        monkeypatch.setattr(config, "get", lambda key: 7 if key == "db_prune_days" else None)
-        tracker = SavingsTracker(session_id="s")
+        monkeypatch.setattr(
+            config, "get", lambda key: 7 if key == "db_prune_days" else None
+        )
+        tracker = src.tracker.SavingsTracker(session_id="s")
         try:
             assert tracker.prune_days == 7
         finally:
             tracker.close()
 
     def test_explicit_argument_still_wins(self):
-        tracker = SavingsTracker(session_id="s", prune_days=3)
+        tracker = src.tracker.SavingsTracker(session_id="s", prune_days=3)
         try:
             assert tracker.prune_days == 3
         finally:
             tracker.close()
 
     def test_rows_older_than_retention_are_pruned(self):
-        tracker = SavingsTracker(session_id="s", prune_days=30)
+        tracker = src.tracker.SavingsTracker(session_id="s", prune_days=30)
         tracker.record_saving(
             command="git status",
             processor="git",
@@ -476,15 +626,17 @@ class TestPruneRetention:
         tracker.conn.commit()
         tracker.close()
 
-        reopened = SavingsTracker(session_id="s", prune_days=30)
+        reopened = src.tracker.SavingsTracker(session_id="s", prune_days=30)
         try:
-            rows = reopened.conn.execute("SELECT COUNT(*) FROM savings").fetchone()[0]
+            rows = reopened.conn.execute(
+                "SELECT COUNT(*) FROM savings"
+            ).fetchone()[0]
             assert rows == 0
         finally:
             reopened.close()
 
     def test_rows_inside_retention_survive(self):
-        tracker = SavingsTracker(session_id="s", prune_days=30)
+        tracker = src.tracker.SavingsTracker(session_id="s", prune_days=30)
         tracker.record_saving(
             command="git status",
             processor="git",
@@ -497,9 +649,11 @@ class TestPruneRetention:
         tracker.conn.commit()
         tracker.close()
 
-        reopened = SavingsTracker(session_id="s", prune_days=30)
+        reopened = src.tracker.SavingsTracker(session_id="s", prune_days=30)
         try:
-            rows = reopened.conn.execute("SELECT COUNT(*) FROM savings").fetchone()[0]
+            rows = reopened.conn.execute(
+                "SELECT COUNT(*) FROM savings"
+            ).fetchone()[0]
             assert rows == 1
         finally:
             reopened.close()

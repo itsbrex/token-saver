@@ -6,7 +6,7 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 [![Avg Savings](docs/assets/badge-savings.svg)](docs/processors/)
 
-**Cut your AI coding costs by 60-99% on CLI output — without losing a single error message.**
+**Reduce the CLI output consuming your AI coding context — with measured compression and tests for critical diagnostics.**
 
 Token-Saver is a drop-in **context-window optimizer for AI coding assistants**. It compresses the verbose terminal output your agent reads — `git diff`, `pytest`, `npm install`, `terraform plan`, `kubectl`, `docker` — so you spend fewer tokens, stay under your LLM context limit, and get faster, cheaper, more focused responses.
 
@@ -16,12 +16,12 @@ Compatible with **Claude Code** and **Antigravity CLI**. ~60ms of added overhead
 
 **Why developers use Token-Saver:**
 
-- 💸 **Lower API bills** — pay for signal, not noise. Typical savings of 60-99% per command.
+- 💸 **Less output to process** — many benchmark scenarios save 60-99% of estimated output tokens; billing impact depends on your usage and provider.
 - 🪟 **Bigger effective context** — fit more real work into the same context window.
 - ⚡ **Faster responses** — less text for the model to read means quicker turnarounds.
-- 🎯 **Zero information loss** — precision-tested so every error, diff, and warning survives.
+- 🎯 **Tested preservation** — failure fixtures check important diagnostics; add quality contracts for your own workflows.
 - 🔌 **Install once, forget it** — works automatically in the background, no prompts to change.
-- 🛡️ **Private & offline** — pure regex/parsing, no data ever leaves your machine.
+- 🛡️ **Local compression** — pure regex/parsing with no network calls in the compression path.
 
 ---
 
@@ -37,6 +37,7 @@ Compatible with **Claude Code** and **Antigravity CLI**. ~60ms of added overhead
 - [Precision Guarantees](#precision-guarantees)
 - [Installation](#installation)
 - [CLI Reference](#cli-reference)
+- [Compression Quality Gates](#compression-quality-gates)
 - [Processors](#processors)
 - [Configuration](#configuration)
 - [Tuning Recipes](#tuning-recipes)
@@ -111,7 +112,7 @@ There are three common ways to attack this:
 
 1. **Summarize with another LLM.** Accurate-ish, but it costs a second inference per command, adds seconds of latency, and is non-deterministic — the same `pytest` run can be summarized two different ways.
 2. **Truncate blindly.** Free and instant, but it's exactly how you lose the one stack-trace line that mattered.
-3. **Parse the format you already know.** `git diff` has a grammar. `pytest` has a summary line. `npm install` has a progress phase and a result phase. If you know the shape, you can drop the noise and keep 100% of the signal — deterministically, in milliseconds.
+3. **Parse the format you already know.** `git diff` has a grammar. `pytest` has a summary line. `npm install` has a progress phase and a result phase. Format-aware parsing can remove repetitive output while retaining tested diagnostics, deterministically and without another model call.
 
 Token-Saver is the third approach, applied to 36 command families. It sits between the CLI and your AI assistant, compresses output with content-aware strategies, and hands the model exactly what it needs.
 
@@ -225,15 +226,18 @@ Variables whose names look sensitive (`SECRET`, `PASSWORD`, `CREDENTIAL`, `API_K
 | Extra inference cost | None | One call per command | None | None |
 | Latency added | ~60ms | Seconds | ~0ms | Varies |
 | Deterministic | Yes | No | Yes | Yes |
-| Preserves all errors | Yes (tested) | Best effort | No | On cache hit only |
+| Diagnostic preservation | Tested fixtures + configurable quality contracts | Depends on prompt/model | No semantic checks | Depends on cached content |
 | Works offline | Yes | Needs a model | Yes | Usually not |
 | Understands `git diff` | Yes | Sort of | No | N/A |
 
-For a tool-by-tool breakdown against `cc_token_saver_mcp`, `token-optimizer-mcp`, and Claude Context Mode — including which ones you can run *alongside* Token-Saver — see the [full comparison](docs/comparison.md).
+For a sourced comparison with RTK and Context Mode, including integration caveats, see the [full comparison](docs/comparison.md).
 
 ## How It Works
 
 ### Architecture
+
+The [architecture guide](docs/architecture.md) describes the processor registry,
+injectable engine policy, quality evaluation, storage and platform adapters.
 
 ```
 CLI command  -->  Specialized processor  -->  Compressed output
@@ -321,17 +325,21 @@ ineligible, the whole chain runs untouched.
 Compression is aggressive on noise, conservative on signal:
 
 - Tiny outputs are never touched, and a result that doesn't actually get smaller is discarded in favor of the original (both thresholds are configurable — see [Configuration](#configuration))
-- All errors, stack traces, and actionable information are **fully preserved**
+- Failure fixtures verify specific errors, tracebacks and changed lines; grouping and bounded recovery can omit other details
 - Source code files (`cat *.py`, `cat *.ts`, ...) pass through **unchanged** — the model needs exact content
 - Secrets in `.env.production`, `.env.local`, and other `.env.*` variants are automatically **redacted** before reaching the model (`.env`, `.env.example`, and `.env.template` pass through unchanged, by design — see the note below)
-- Only "noise" is removed: progress bars, passing tests, installation logs, ANSI codes, platform lines
-- Truncation is always **marked**, never silent — the model can tell "there was nothing else" from "there was more, and it was cut"
+- Processors remove or group progress bars, passing tests, installation logs, ANSI codes and other repetitive content according to their documented rules
+- Generic truncation includes an omission marker; format-specific processors can also summarize or omit lines
 - 1300+ tests including precision-specific tests that verify every critical piece of data survives compression, and a compression-ratchet suite that fails CI if a real-world scenario's compression ratio regresses
 
 Two of these are enforced structurally rather than by convention:
 
 - **`TestFailureHandling`** runs a realistic *failing*-command fixture through **every** processor, at **every** exit code (`0`, `1`, and unknown), and asserts the failure reason is still present. A processor that claims `handles_failure = True` has to earn it; one that doesn't gets routed around.
-- **Critical-line recovery** (step 7 above) catches the generic version of the same bug — a processor loop with no `else` branch, where unmatched lines vanish with no marker and no counter.
+- **Critical-line recovery** (step 7 above) restores recognized error lines within a configurable cap, except after redaction where restoring raw lines could expose secrets.
+
+These are protections on tested output formats, not a universal lossless guarantee.
+Use [quality gates](#compression-quality-gates) to assert the exact diagnostics
+your workflow requires.
 
 > **Note on `.env`:** `.env`, `.env.example`, and `.env.template` are intentionally left untouched (not redacted, not compressed) — these are the files you're most likely actively editing, where exact values matter. Other `.env.*` variants (`.env.production`, `.env.local`, ...), which you're more likely to be reading than editing, get their values redacted. If you `cat .env` directly, treat that output as sensitive the same way you would without Token-Saver installed.
 
@@ -470,6 +478,11 @@ After installation the `token-saver` command is available. If `~/.local/bin` is 
 | `token-saver benchmark '<cmd>' --format json` | Machine-readable benchmark |
 | `token-saver explain '<cmd>'` | Explain how a command is routed — or why it's excluded |
 | `token-saver explain '<cmd>' --format json` | Same, machine-readable |
+| `token-saver compress '<cmd>'` | Read UTF-8 stdin and emit compressed text; never execute the command label |
+| `token-saver compress '<cmd>' --exit-code 1 --max-tokens 1500` | Apply failure-aware routing and check an estimated output budget |
+| `token-saver compress '<cmd>' --format json` | Compressed output plus measurements and budget verdict |
+| `token-saver replay quality.json` | Check captured fixtures against preservation and budget contracts |
+| `token-saver replay quality.json --format json` | Content-free quality report for CI |
 
 `explain` is the fastest way to answer "why didn't that get compressed?":
 
@@ -497,6 +510,29 @@ pytest > /tmp/out.txt 2>&1
 token-saver benchmark 'pytest' --stdin --show-removed < /tmp/out.txt
 ```
 
+## Compression Quality Gates
+
+Make compression testable on **your** workflow: set per-command and total token
+budgets, require a minimum measured reduction, and name literal messages that
+must survive. `replay` checks saved fixtures without re-running commands; a typo
+in a required message fails against the original fixture too.
+
+```bash
+python3 bin/token-saver replay examples/quality-replay.json
+python3 bin/token-saver compress 'pytest -v' --exit-code 1 --max-tokens 1500 < examples/fixtures/pytest_output.txt
+```
+
+An over-budget result returns status `1` and retains the compressed output;
+it never truncates more text just to satisfy a limit. Invalid input returns `2`.
+Token counts use `ceil(characters / chars_per_token)` and remain estimates,
+not exact tokenizer or billing counts. JSON replay reports omit command strings,
+raw output and expected text; `compress --format json` includes the compressed output.
+Neither command stores captured output or savings history.
+
+See [the manifest format and CI example](docs/quality-gates.md). These additions
+are available in this checkout; use `python3 bin/token-saver` to try them before
+a release is published.
+
 ## Processors
 
 Each processor handles a family of commands. The first one that matches
@@ -506,8 +542,8 @@ processor is in [`docs/processors/`](docs/processors/).
 | # | Processor | Priority | Commands | Docs |
 |---|---|---|---|---|
 | 1 | **Package List** | 15 | pip list/freeze, npm ls, conda list, gem list, brew list | [package_list.md](docs/processors/package_list.md) |
-| 2 | **just** | 18 | just --list, just --summary (recipe listing compaction) | — |
-| 3 | **act** | 19 | act (run GitHub Actions locally via nektos/act) | — |
+| 2 | **just** | 18 | just --list, just --summary (recipe listing compaction) | [just.md](docs/processors/just.md) |
+| 3 | **act** | 19 | act (run GitHub Actions locally via nektos/act) | [act.md](docs/processors/act.md) |
 | 4 | **Git** | 20 | status, diff, log, show, push/pull/fetch, branch, stash, reflog, blame, cherry-pick, rebase, merge | [git.md](docs/processors/git.md) |
 | 5 | **Test** | 21 | pytest, jest, vitest, mocha, cargo test, go test, rspec, phpunit, bun test, npm/yarn/pnpm test, dotnet test, swift test, mix test | [test_output.md](docs/processors/test_output.md) |
 | 6 | **Cargo** | 22 | cargo build, check, doc, update, bench | [cargo.md](docs/processors/cargo.md) |
@@ -517,7 +553,7 @@ processor is in [`docs/processors/`](docs/processors/).
 | 10 | **Cargo Clippy** | 26 | cargo clippy (multi-line block grouping with span/help preservation) | [cargo_clippy.md](docs/processors/cargo_clippy.md) |
 | 11 | **Lint** | 27 | eslint, ruff, flake8, pylint, clippy, mypy, prettier, biome, shellcheck, hadolint, rubocop, golangci-lint | [lint_output.md](docs/processors/lint_output.md) |
 | 12 | **Maven/Gradle** | 28 | mvn, ./mvnw, gradle, ./gradlew (download stripping, task noise removal) | [maven_gradle.md](docs/processors/maven_gradle.md) |
-| 13 | **Bun** | 29 | bun install, add, remove, update | — |
+| 13 | **Bun** | 29 | bun install, add, remove, update | [bun.md](docs/processors/bun.md) |
 | 14 | **Network** | 30 | curl, wget, http/https (httpie) | [network.md](docs/processors/network.md) |
 | 15 | **Docker** | 31 | ps, images, logs, pull/push, inspect, stats, compose up/down/build/ps/logs | [docker.md](docs/processors/docker.md) |
 | 16 | **Kubernetes** | 32 | kubectl/oc get, describe, logs, top, apply, delete, create | [kubectl.md](docs/processors/kubectl.md) |
@@ -534,10 +570,10 @@ processor is in [`docs/processors/`](docs/processors/).
 | 27 | **SSH/SCP** | 43 | non-interactive ssh, scp (remote command output compression) | [ssh.md](docs/processors/ssh.md) |
 | 28 | **JQ/YQ** | 44 | jq, yq (large JSON/YAML output compaction) | [jq_yq.md](docs/processors/jq_yq.md) |
 | 29 | **Structured Log** | 45 | stern, kubetail (JSON Lines grouping by level) | [structured_log.md](docs/processors/structured_log.md) |
-| 30 | **Pulumi** | 46 | pulumi up, preview, destroy, refresh | — |
-| 31 | **CDKTF** | 47 | cdktf deploy, diff, destroy, synth | — |
-| 32 | **Nix** | 48 | nix build/develop/eval/run, nix-build, nix-shell | — |
-| 33 | **mise** | 49 | mise install, use, upgrade (runtime version manager) | — |
+| 30 | **Pulumi** | 46 | pulumi up, preview, destroy, refresh | [pulumi.md](docs/processors/pulumi.md) |
+| 31 | **CDKTF** | 47 | cdktf deploy, diff, destroy, synth | [cdktf.md](docs/processors/cdktf.md) |
+| 32 | **Nix** | 48 | nix build/develop/eval/run, nix-build, nix-shell | [nix.md](docs/processors/nix.md) |
+| 33 | **mise** | 49 | mise install, use, upgrade (runtime version manager) | [mise.md](docs/processors/mise.md) |
 | 34 | **File Listing** | 50 | ls, find, tree, exa, eza, rsync | [file_listing.md](docs/processors/file_listing.md) |
 | 35 | **File Content** | 51 | cat, head, tail, bat, less, more (content-aware: code, config, log, CSV) | [file_content.md](docs/processors/file_content.md) |
 | 36 | **Generic** | 999 | Any command (fallback: ANSI strip, dedup, truncation) | [generic.md](docs/processors/generic.md) |
