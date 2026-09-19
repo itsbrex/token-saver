@@ -1,11 +1,11 @@
 ---
-title: Home
-description: Content-aware output compression for AI coding assistants. 36 specialized processors cut CLI output tokens by 60-99% without losing errors, diffs, or stack traces.
+title: Token-Saver
+description: Reduce CLI output tokens for AI coding assistants with 36 specialized processors. Local compression for git, pytest, Docker, Terraform, and more.
 permalink: /
 nav_order: 1
 ---
 
-# Token-Saver
+# Token-Saver: CLI output compression for AI coding assistants
 
 **Content-aware output compression for AI coding assistants.**
 
@@ -16,8 +16,9 @@ before it reaches the model. 36 specialized processors understand the shape
 of each tool's output, so errors, diffs, and stack traces survive while
 progress bars, passing tests, and installation logs are dropped.
 
-No LLM calls. No network access. Fully offline and deterministic — the same
-input always produces the same output.
+Compression runs locally with no LLM calls or output uploads. With the same
+configuration, the same input produces the same output. An optional GitHub
+release check is the only built-in network request; compression works offline.
 
 ## Results
 
@@ -30,10 +31,11 @@ input always produces the same output.
 | `docker build` (20 steps) | 1,682 tokens | 207 tokens | **88%** |
 | `curl` download (100 progress lines) | 2,122 tokens | 0 tokens | **100%** |
 
+Token counts are estimates based on character length, not model tokenization.
 These six rows are a sample. The full set of 22 measured scenarios — sorted
 by ratio, with methodology and reproduction steps — is on the
 [Benchmarks](benchmarks.md) page, and it's gated by CI: a code change that
-makes any of them compress worse fails the build.
+makes a scenario regress beyond the recorded tolerance fails the build.
 
 ## Install
 
@@ -57,10 +59,13 @@ for manual installation, Antigravity CLI setup, and upgrading from v1.x.
 
 ## Documentation
 
-- [Processor reference](processors/) — one page per tool family: what each of the 36 processors keeps and drops.
+- [Compression quality gates](quality-gates.md) — compress saved logs and check budgets and required diagnostics before adopting new rules.
+- [Architecture](architecture.md) — extension points and responsibilities for contributors.
+
+- [Processor reference](processors/index.md) — one page per tool family: what each of the 36 processors keeps and drops.
 - [Benchmarks](benchmarks.md) — every measured scenario, methodology, and how to reproduce them.
-- [How It Compares](comparison.md) — vs `cc_token_saver_mcp`, `token-optimizer-mcp`, and Claude Context Mode.
-- [FAQ](faq.md) — privacy, precision guarantees, platform support, and common questions.
+- [How It Compares](comparison.md) — command compression and context retrieval with RTK and Context Mode.
+- [FAQ](faq.md) — privacy, error preservation, platform support, and common questions.
 
 ## Why It Exists
 

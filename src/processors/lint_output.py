@@ -1,33 +1,67 @@
-"""Lint output processor: eslint, ruff, flake8, pylint, clippy, rubocop, shellcheck, hadolint."""
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
+"""Group lint-tool diagnostics by rule and retain example locations."""
+
+import collections
 import re
-from collections import defaultdict
 
-from .. import config
-from .base import PYTHON_CMD, Processor
+from src import config
+from src.processors import base
 
 
-class LintOutputProcessor(Processor):
+class LintOutputProcessor(base.Processor):
+    """Group lint violations by rule while retaining example locations."""
+
     priority = 27
     handles_failure = True
     hook_patterns = [
-        r"^(eslint|ruff(\s+check)?|flake8|pylint|rubocop|golangci-lint|stylelint|biome\s+(check|lint))\b",
-        rf"^{PYTHON_CMD}\s+-m\s+(flake8|pylint|ruff|mypy)\b",
-        r"^(mypy|prettier\s+--check|shellcheck|hadolint|tflint|ktlint|swiftlint)\b",
+        (
+            r"^(eslint|ruff(\s+check)?|flake8|pylint|rubocop|golangci-lint|"
+            r"stylelint|biome\s+(check|lint))\b"
+        ),
+        rf"^{base.PYTHON_CMD}\s+-m\s+(flake8|pylint|ruff|mypy)\b",
+        (
+            r"^(mypy|prettier\s+--check|shellcheck|hadolint|tflint|ktlint|"
+            r"swiftlint)\b"
+        ),
         r"^(oxlint|deno\s+lint)\b",
-        r"^(npx\s+(eslint|prettier|stylelint|biome)\b|poetry\s+run\s+(flake8|pylint|ruff|mypy)\b|uv\s+run\s+(flake8|pylint|ruff|mypy|ruff\s+check)\b|bundle\s+exec\s+rubocop\b)",
+        (
+            r"^(npx\s+(eslint|prettier|stylelint|biome)\b|"
+            r"poetry\s+run\s+(flake8|pylint|ruff|mypy)\b|uv\s+run\s+(flake8|"
+            r"pylint|ruff|mypy|ruff\s+check)\b|bundle\s+exec\s+rubocop\b)"
+        ),
     ]
 
     @property
     def name(self) -> str:
+        """The stable name used for processor routing and savings tracking."""
         return "lint"
 
     def can_handle(self, command: str) -> bool:
+        """Return whether this processor supports the supplied command.
+
+        Args:
+            command: Shell command text used for routing.
+
+        Returns:
+            Whether the command matches this processor's supported tools.
+        """
         return bool(
             re.search(
                 r"\b(eslint|ruff(\s+check)?|flake8|pylint|clippy|rubocop|"
-                r"golangci-lint|stylelint|prettier\s+--check|biome\s+(check|lint)|"
-                rf"{PYTHON_CMD}\s+-m\s+(flake8|pylint|ruff|mypy)|mypy|"
+                r"golangci-lint|stylelint|prettier\s+--check|biome\s+(check|"
+                r"lint)|"
+                rf"{base.PYTHON_CMD}\s+-m\s+(flake8|pylint|ruff|mypy)|mypy|"
                 r"shellcheck|hadolint|tflint|ktlint|swiftlint|cargo\s+clippy|"
                 r"oxlint|deno\s+lint|"
                 r"npx\s+(eslint|prettier|stylelint|biome)|"
@@ -39,13 +73,22 @@ class LintOutputProcessor(Processor):
         )
 
     def process(self, command: str, output: str) -> str:
+        """Compress captured output according to this processor's rules.
+
+        Args:
+            command: Original shell command used to select output handling.
+            output: Captured command output before this transformation.
+
+        Returns:
+            Compressed text, or the input when no safe reduction is available.
+        """
         if not output or not output.strip():
             return output
 
         lines = output.splitlines()
 
-        violations_by_rule: dict[str, list[str]] = defaultdict(list)
-        files_by_rule: dict[str, set[str]] = defaultdict(set)
+        violations_by_rule: dict[str, list[str]] = collections.defaultdict(list)
+        files_by_rule: dict[str, set[str]] = collections.defaultdict(set)
         ungrouped: list[str] = []
         summary_lines: list[str] = []
         current_file = ""  # Track current file for ESLint block format
@@ -55,8 +98,11 @@ class LintOutputProcessor(Processor):
             if not stripped:
                 continue
 
-            # Detect ESLint file header line (path without colon/digits -- not a violation)
-            if re.match(r"^/?[\w./_-]+\.\w+$", stripped) and not re.search(r":\d+", stripped):
+            # Detect ESLint file header line (path without colon/digits -- not a
+            # violation)
+            if re.match(r"^/?[\w./_-]+\.\w+$", stripped) and not re.search(
+                r":\d+", stripped
+            ):
                 current_file = stripped
                 continue
 
@@ -87,7 +133,9 @@ class LintOutputProcessor(Processor):
         total_rules = len(violations_by_rule)
         result.append(f"{total_violations} issues across {total_rules} rules:")
 
-        for rule, violations in sorted(violations_by_rule.items(), key=lambda x: -len(x[1])):
+        for rule, violations in sorted(
+            violations_by_rule.items(), key=lambda x: -len(x[1])
+        ):
             count = len(violations)
             file_count = len(files_by_rule[rule])
             if count > group_threshold:
@@ -104,20 +152,26 @@ class LintOutputProcessor(Processor):
         if summary_lines:
             result.extend(summary_lines)
 
-        # Include ungrouped lines that might be important (errors, not just noise)
+        # Include ungrouped lines that might be important (errors, not just
+        # noise)
         important_ungrouped = [
-            line for line in ungrouped if re.search(r"\b(error|fatal|cannot|failed)\b", line, re.I)
+            line
+            for line in ungrouped
+            if re.search(r"\b(error|fatal|cannot|failed)\b", line, re.I)
         ]
         if important_ungrouped:
             result.extend(important_ungrouped[:5])
 
         return "\n".join(result)
 
-    def _parse_violation(self, line: str, current_file: str = "") -> tuple[str, str] | None:
+    def _parse_violation(
+        self, line: str, current_file: str = ""
+    ) -> tuple[str, str] | None:
         """Extract (rule_id, filepath) from a lint violation line."""
-
         # ESLint indented format:  10:5  error  Unexpected var  no-var
-        m = re.match(r"^\s*(\d+):(\d+)\s+(error|warning)\s+(.+?)\s{2,}(\S+)\s*$", line)
+        m = re.match(
+            r"^\s*(\d+):(\d+)\s+(error|warning)\s+(.+?)\s{2,}(\S+)\s*$", line
+        )
         if m:
             return m.group(5), current_file
 
@@ -127,7 +181,9 @@ class LintOutputProcessor(Processor):
             return m.group(3), m.group(1)
 
         # ESLint inline alt: /path/file.js:10:5  error  message  rule-name
-        m = re.match(r"^(.+?):(\d+):\d+\s+(error|warning)\s+.+?\s{2,}(\S+)\s*$", line)
+        m = re.match(
+            r"^(.+?):(\d+):\d+\s+(error|warning)\s+.+?\s{2,}(\S+)\s*$", line
+        )
         if m:
             return m.group(4), m.group(1)
 
@@ -142,7 +198,9 @@ class LintOutputProcessor(Processor):
             return m.group(3), m.group(1)
 
         # mypy: file.py:10: error: message  [error-code]
-        m = re.match(r"^(.+?):(\d+):\s+(error|warning|note):\s+.+\[(\S+)\]\s*$", line)
+        m = re.match(
+            r"^(.+?):(\d+):\s+(error|warning|note):\s+.+\[(\S+)\]\s*$", line
+        )
         if m:
             return m.group(4), m.group(1)
 
@@ -161,7 +219,10 @@ class LintOutputProcessor(Processor):
         m = re.match(r"^In (.+?) line (\d+):", line)
         if m:
             return "shellcheck", m.group(1)
-        m = re.match(r"^(.+?):(\d+):\d+:\s+(warning|error|info|style)\s*-\s*(SC\d+)", line)
+        m = re.match(
+            r"^(.+?):(\d+):\d+:\s+(warning|error|info|style)\s*-\s*(SC\d+)",
+            line,
+        )
         if m:
             return m.group(4), m.group(1)
 
@@ -176,7 +237,9 @@ class LintOutputProcessor(Processor):
             return m.group(3), m.group(1)
 
         # golangci-lint: file.go:10:5: message (linter-name)
-        m = re.match(r"^(.+?\.go):(\d+):\d+:\s+.+\(([a-zA-Z][\w-]*)\)\s*$", line)
+        m = re.match(
+            r"^(.+?\.go):(\d+):\d+:\s+.+\(([a-zA-Z][\w-]*)\)\s*$", line
+        )
         if m:
             return m.group(3), m.group(1)
 

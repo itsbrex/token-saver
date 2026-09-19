@@ -1,4 +1,16 @@
 #!/usr/bin/env python3
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Display token-saver savings statistics.
 
 Usage:
@@ -12,8 +24,13 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.console import use_utf8_io
-from src.tracker import SavingsTracker
+# Installed entrypoints must establish the package root first.
+# pylint: disable=wrong-import-position
+from src import config
+from src import console
+from src import tracker as tracker_lib
+
+# pylint: enable=wrong-import-position
 
 # ── ANSI escape codes ──────────────────────────────────────────────
 BOLD = "\033[1m"
@@ -32,14 +49,27 @@ WIDTH = 50
 
 
 def _chars_to_tokens(n: int) -> int:
-    """Estimate token count from character count."""
-    from src import config  # noqa: PLC0415
+    """Estimate token count from character count.
 
+    Args:
+        n: Nonnegative count to format or convert.
+
+    Returns:
+        A rounded token estimate using the configured characters-per-token
+        ratio.
+    """
     return max(1, round(n / config.get("chars_per_token"))) if n > 0 else 0
 
 
 def _format_tokens(n: int) -> str:
-    """Human-readable token count."""
+    """Human-readable token count.
+
+    Args:
+        n: Nonnegative count to format or convert.
+
+    Returns:
+        Compact token-count text with K or M suffixes when appropriate.
+    """
     if n < 1_000:
         return f"{n}"
     if n < 1_000_000:
@@ -48,7 +78,14 @@ def _format_tokens(n: int) -> str:
 
 
 def _ratio_color(ratio: float) -> str:
-    """Return ANSI color code based on compression ratio."""
+    """Return ANSI color code based on compression ratio.
+
+    Args:
+        ratio: Percentage of output characters saved.
+
+    Returns:
+        An ANSI escape sequence for the savings band.
+    """
     if ratio >= 60:
         return GREEN
     if ratio >= 30:
@@ -57,14 +94,31 @@ def _ratio_color(ratio: float) -> str:
 
 
 def _progress_bar(ratio: float, width: int = 20) -> str:
-    """Render a progress bar with filled/empty blocks."""
+    """Render a progress bar with filled/empty blocks.
+
+    Args:
+        ratio: Percentage of output characters saved.
+        width: Number of character cells available for the bar.
+
+    Returns:
+        A colored bar with filled and empty cells.
+    """
     filled = round(ratio / 100 * width)
     empty = width - filled
     return f"{CYAN}{'█' * filled}{'░' * empty}{RESET}"
 
 
 def _impact_bar(value: float, max_value: float, width: int = 10) -> str:
-    """Render an impact bar proportional to max value."""
+    """Render an impact bar proportional to max value.
+
+    Args:
+        value: Saved character count represented by this bar.
+        max_value: Largest saved character count used to scale the bars.
+        width: Number of character cells available for the bar.
+
+    Returns:
+        A colored bar, or an empty string when the maximum is not positive.
+    """
     if max_value <= 0:
         return ""
     filled = max(1, round(value / max_value * width))
@@ -72,12 +126,18 @@ def _impact_bar(value: float, max_value: float, width: int = 10) -> str:
 
 
 def _print_header():
+    """Print the heading for the lifetime savings report."""
     print()
     print(f"  {BOLD_GREEN}Token-Saver Savings (Lifetime){RESET}")
     print(f"  {BOLD_YELLOW}{'═' * WIDTH}{RESET}")
 
 
 def _print_summary(lifetime):
+    """Print lifetime character totals as estimated token savings.
+
+    Args:
+        lifetime: Lifetime aggregate counts returned by the savings tracker.
+    """
     orig_tokens = _chars_to_tokens(lifetime["original"])
     comp_tokens = _chars_to_tokens(lifetime["compressed"])
     saved_tokens = _chars_to_tokens(lifetime["saved"])
@@ -85,17 +145,33 @@ def _print_summary(lifetime):
     color = _ratio_color(ratio)
 
     print()
-    print(f"  {'Total commands:':<20s} {BOLD_WHITE}{lifetime['commands']}{RESET}")
-    print(f"  {'Input tokens:':<20s} {BOLD_WHITE}{_format_tokens(orig_tokens)}{RESET}")
-    print(f"  {'Output tokens:':<20s} {BOLD_WHITE}{_format_tokens(comp_tokens)}{RESET}")
     print(
-        f"  {'Tokens saved:':<20s} {BOLD_WHITE}{_format_tokens(saved_tokens)}{RESET}"
+        f"  {'Total commands:':<20s} {BOLD_WHITE}{lifetime['commands']}{RESET}"
+    )
+    print(
+        f"  {'Input tokens:':<20s} "
+        f"{BOLD_WHITE}{_format_tokens(orig_tokens)}{RESET}"
+    )
+    print(
+        f"  {'Output tokens:':<20s} "
+        f"{BOLD_WHITE}{_format_tokens(comp_tokens)}{RESET}"
+    )
+    print(
+        f"  {'Tokens saved:':<20s} "
+        f"{BOLD_WHITE}{_format_tokens(saved_tokens)}{RESET}"
         f" {color}({ratio}%){RESET}"
     )
-    print(f"  {'Efficiency:':<20s} {_progress_bar(ratio)}  {color}{ratio}%{RESET}")
+    print(
+        f"  {'Efficiency:':<20s} {_progress_bar(ratio)}  {color}{ratio}%{RESET}"
+    )
 
 
 def _print_by_command(top_commands):
+    """Print command-level savings and relative impact bars.
+
+    Args:
+        top_commands: Command aggregates ordered by descending saved characters.
+    """
     if not top_commands:
         return
 
@@ -137,13 +213,20 @@ def _print_by_command(top_commands):
 
 
 def _print_mismatches(mismatches):
+    """Print processor mismatch counts when any were recorded.
+
+    Args:
+        mismatches: Processor mismatch aggregates ordered by event count.
+    """
     if not mismatches:
         return
 
     print()
     print(f"  {BOLD_GREEN}Processor Mismatches{RESET}")
     print(f"  {BOLD_YELLOW}{'─' * WIDTH}{RESET}")
-    print(f"  {DIM}Specialized processor ran but didn't compress enough.{RESET}")
+    print(
+        f"  {DIM}Specialized processor ran but didn't compress enough.{RESET}"
+    )
     print()
     for m in mismatches:
         print(f"  {CYAN}{m['processor']:<20s}{RESET} {m['count']:>5d} events")
@@ -151,14 +234,9 @@ def _print_mismatches(mismatches):
 
 
 def main():
-    use_utf8_io()
+    """Render tracker statistics as terminal text or JSON from sys.argv."""
+    console.use_utf8_io()
     as_json = "--json" in sys.argv
-
-    # Allow override for testing
-    db_dir = os.environ.get("TOKEN_SAVER_DB_DIR")
-    if db_dir:
-        SavingsTracker.DB_DIR = db_dir
-        SavingsTracker.DB_PATH = os.path.join(db_dir, "savings.db")
 
     # Allow passing a session ID to show stats for a specific session
     session_id = None
@@ -166,7 +244,7 @@ def main():
         if arg == "--session" and i < len(sys.argv) - 1:
             session_id = sys.argv[i + 1]
 
-    tracker = SavingsTracker(session_id=session_id)
+    tracker = tracker_lib.SavingsTracker(session_id=session_id)
     session = tracker.get_session_stats()
     lifetime = tracker.get_lifetime_stats()
     top_processors = tracker.get_top_processors(limit=5)

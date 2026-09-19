@@ -17,8 +17,31 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  docs:
+    name: Documentation & SEO
+    runs-on: ubuntu-latest
+    env:
+      BUNDLE_GEMFILE: docs/Gemfile
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          bundler-cache: true
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Build GitHub Pages documentation
+        run: bundle exec jekyll build --source docs --destination docs/_site --trace
+
+      - name: Check rendered metadata, links, and sitemap
+        run: python scripts/check_docs.py docs/_site
+
   lint:
-    name: Lint & types
+    name: Google Python style & types
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -30,13 +53,23 @@ jobs:
       # Pinned: an unpinned ruff silently disagrees with the contributor's
       # local version and fails CI on unrelated PRs (see chore/ruff-ci-fix).
       - name: Install tooling
-        run: pip install "ruff==0.15.15" "mypy>=1.11,<2"
+        run: pip install "ruff==0.15.15" "pylint==4.0.5" "mypy>=1.11,<2"
 
       - name: Ruff check
-        run: ruff check .
+        run: ruff check . bin/token-saver
 
       - name: Ruff format check
-        run: ruff format --check .
+        run: ruff format --check . bin/token-saver
+
+      - name: Google imports and comprehensions
+        run: python scripts/check_python_style.py
+
+      - name: Pylint with Google configuration
+        run: >-
+          pylint --rcfile=.pylintrc src scripts installers
+          antigravity/hook_aftertool.py install.py
+          examples/demo.py examples/custom_processor/ansible_output.py
+          bin/token-saver
 
       # Type checking is OS- and version-independent, so it belongs here and
       # runs once — not four times at the tail of every test matrix entry.
