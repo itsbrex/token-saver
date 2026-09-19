@@ -20,6 +20,7 @@
 
 - [Compression quality gates](https://ppgranger.github.io/token-saver/quality-gates/): Offline compression and replay checks for saved logs, token budgets, and required diagnostics.
 - [Architecture](https://ppgranger.github.io/token-saver/architecture/): Component responsibilities and extension points for contributors.
+- [Delta](https://ppgranger.github.io/token-saver/delta/): Experimental v3 pytest and Ruff diagnostic comparisons, opt-in local retention, and detail retrieval.
 
 ## Processors (one page per tool family)
 

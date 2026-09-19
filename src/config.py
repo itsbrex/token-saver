@@ -77,6 +77,9 @@ _DEFAULTS = {
     "max_traceback_lines": 30,
     "db_max_rows": 20,
     "db_prune_days": 90,
+    "delta_enabled": False,
+    "delta_retention_hours": 24,
+    "delta_max_runs": 100,
     "chars_per_token": 4,
     "user_processors_dir": "",
     "cargo_warning_example_count": 2,
@@ -106,11 +109,20 @@ PROJECT_CONFIG_FILE = ".token-saver.json"
 #: every ``.py`` file in that directory.  ``disabled_processors`` and
 #: ``redaction_allowlist`` don't run code, but they can silently switch off
 #: the secret-redaction safety net this same repo could then rely on you not
-#: noticing. None of the three has a legitimate per-project use that
+#: noticing. Delta options control sensitive output retention: a cloned repo
+#: must not enable recording or extend retention. These options belong in
+#: trusted configuration. None has a legitimate per-project use that
 #: ``~/.token-saver/config.json`` or an env var doesn't already cover, so a
 #: project file setting them is dropped outright rather than coerced.
 _PROJECT_FORBIDDEN_KEYS = frozenset(
-    {"user_processors_dir", "disabled_processors", "redaction_allowlist"}
+    {
+        "user_processors_dir",
+        "disabled_processors",
+        "redaction_allowlist",
+        "delta_enabled",
+        "delta_retention_hours",
+        "delta_max_runs",
+    }
 )
 
 
@@ -301,6 +313,16 @@ def _load_config() -> dict[str, Any]:
             else:
                 config[key] = env_val
             config.setdefault("_config_source", {})[key] = f"env:{env_key}"
+
+    # Output retention is always bounded, even for trusted configuration. Bad
+    # limits fall back to documented defaults instead of disabling expiry.
+    for key, maximum in (
+        ("delta_retention_hours", 168),
+        ("delta_max_runs", 1000),
+    ):
+        if not 1 <= config[key] <= maximum:
+            config[key] = _DEFAULTS[key]
+            config["_config_source"][key] = "default"
 
     return config
 

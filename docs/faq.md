@@ -86,10 +86,20 @@ design.
 
 ## Can a repository I clone attack me through `.token-saver.json`?
 
-Not through the three keys that would matter. `user_processors_dir`
-(arbitrary code execution), `disabled_processors`, and
-`redaction_allowlist` are all rejected from project-level config. The rest
-are numeric thresholds with no code path to abuse.
+Project configuration cannot set `user_processors_dir`, `disabled_processors`,
+or `redaction_allowlist`, which control trusted code and secret masking.
+It also cannot enable Delta recording or change its retention limits:
+`delta_enabled`, `delta_retention_hours`, and `delta_max_runs` require global
+configuration or environment variables. A project may still tune ordinary
+compression thresholds, so review its configuration when output matters.
+
+## Does Token-Saver keep diagnostic output on disk?
+
+Ordinary compression and savings tracking do not archive output. The optional
+[Experimental Delta](delta.md) retains sanitized pytest and Ruff snapshots locally
+when explicitly enabled. Its defaults are 24 hours and at most 100 snapshots.
+Masking recognizes common secret formats but cannot identify every secret.
+Use `token-saver delta clear` to remove snapshots and reset comparisons.
 
 ## How do I turn it off temporarily?
 

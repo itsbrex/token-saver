@@ -26,6 +26,9 @@ from __future__ import annotations
 
 import json
 import os
+import pathlib
+import re
+import shlex
 import subprocess
 import sys
 
@@ -38,13 +41,20 @@ IS_WINDOWS = sys.platform == "win32"
 def _sandbox_env(home: str) -> dict[str, str]:
     """An environment whose every home-ish path points inside ``home``."""
     env = dict(os.environ)
+    # A temporary HOME alone cannot override explicit storage/plugin paths.
+    # Also remove import paths so missing installed modules cannot be supplied
+    # accidentally by the checkout or a developer's plugin configuration.
+    for name in tuple(env):
+        if name.startswith(("TOKEN_SAVER_", "PYTEST_", "RUFF_")):
+            env.pop(name)
+    env.pop("PYTHONPATH", None)
     env["HOME"] = home
     env["USERPROFILE"] = home  # Windows: what expanduser("~") reads
     env["APPDATA"] = os.path.join(home, "AppData", "Roaming")
     env["LOCALAPPDATA"] = os.path.join(home, "AppData", "Local")
-    # Keep the installer from finding a developer config on the CI runner.
-    env.pop("TOKEN_SAVER_DATA_DIR", None)
-    env.pop("XDG_DATA_HOME", None)
+    env["XDG_CONFIG_HOME"] = os.path.join(home, ".config")
+    env["XDG_DATA_HOME"] = os.path.join(home, ".local", "share")
+    env["XDG_CACHE_HOME"] = os.path.join(home, ".cache")
     return env
 
 
@@ -101,7 +111,16 @@ def test_install_claude_populates_a_usable_tree(home):
     for rel in (
         "src/engine.py",
         "src/core.py",
+        "src/command_policy.py",
+        "src/telemetry.py",
+        "src/updater.py",
+        "src/stats_formatting.py",
         "src/config.py",
+        "src/delta.py",
+        "src/delta_cli.py",
+        "src/delta_store.py",
+        "src/delta_redaction.py",
+        "src/diagnostics.py",
         "src/processors/__init__.py",
     ):
         assert os.path.isfile(os.path.join(core, rel)), (
@@ -139,6 +158,101 @@ def test_installed_tree_actually_compresses(home):
         f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
     )
     assert proc.stdout.split() == ["git", "True", "True"]
+
+
+def test_sandbox_rejects_inherited_storage_plugins_and_import_paths(
+    home, monkeypatch
+):
+    for name in (
+        "TOKEN_SAVER_DB_DIR",
+        "TOKEN_SAVER_USER_PROCESSORS_DIR",
+        "TOKEN_SAVER_DELTA_ENABLED",
+        "PYTHONPATH",
+    ):
+        monkeypatch.setenv(name, "outside-test-profile")
+    environment = _sandbox_env(home)
+    assert "PYTHONPATH" not in environment
+    assert not any(name.startswith("TOKEN_SAVER_") for name in environment)
+
+
+def test_installed_delta_repeats_and_reads_without_rerunning(home):
+    """Exercise the copied wrapper, store and CLI away from the checkout."""
+    assert _run_installer(home, "--target", "claude").returncode == 0
+    core = pathlib.Path(_data_dir(home))
+    project = pathlib.Path(home) / "fixture project"
+    project.mkdir()
+    (project / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
+    (project / ".token-saver.json").write_text("{}\n", encoding="utf-8")
+    (project / "test_fixture.py").write_text(
+        "import pathlib\n"
+        "counter = pathlib.Path('executions.txt')\n"
+        "prior = counter.read_text(encoding='utf-8')"
+        " if counter.exists() else ''\n"
+        "counter.write_text(prior + 'x', encoding='utf-8')\n"
+        "def test_installed():\n"
+        "    actual = list(range(40))\n"
+        "    actual[-1] = -1\n"
+        "    assert actual == list(range(40)), 'installed failure'\n",
+        encoding="utf-8",
+    )
+    environment = _sandbox_env(home)
+    environment.update(
+        TOKEN_SAVER_SESSION="installed-smoke",  # noqa: S106 — fixture ID.
+        PYTEST_DISABLE_PLUGIN_AUTOLOAD="1",
+        PYTHONDONTWRITEBYTECODE="1",
+    )
+    executable = (
+        sys.executable.replace("\\", "/") if IS_WINDOWS else sys.executable
+    )
+    command = shlex.join(
+        [executable, "-m", "pytest", "-vv", "--color=no", "test_fixture.py"]
+    )
+    arguments = [sys.executable, str(core / "scripts" / "wrap.py"), command]
+    results = []
+    for enabled in (False, True, True):
+        if enabled:
+            # S106: feature configuration, not a credential.
+            environment.update(TOKEN_SAVER_DELTA_ENABLED="true")  # noqa: S106
+        result = subprocess.run(  # noqa: S603 — temporary fixture only.
+            arguments,
+            cwd=project,
+            env=environment,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+            check=False,
+        )
+        assert result.returncode == 1, result.stderr
+        results.append(result.stdout)
+        if not enabled:
+            assert not (core / "delta").exists()
+            assert "delta show" not in result.stdout
+    assert "UNCHANGED test_fixture.py::test_installed" in results[2]
+    match = re.search(r"delta show ([0-9a-f]{32})", results[2])
+    assert match is not None
+    show = subprocess.run(  # noqa: S603 — read the installed local snapshot.
+        [
+            sys.executable,
+            str(core / "bin" / "token-saver"),
+            "delta",
+            "show",
+            match[1],
+            "--diagnostic",
+            "test_fixture.py::test_installed",
+        ],
+        cwd=project,
+        env=environment,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+        check=False,
+    )
+    assert show.returncode == 0, show.stderr
+    assert "installed failure" in show.stdout
+    assert "actual == list(range(40))" in show.stdout
+    assert (project / "executions.txt").read_text(encoding="utf-8") == "xxx"
 
 
 def test_install_registers_the_hook(home):

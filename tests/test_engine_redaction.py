@@ -12,6 +12,8 @@
 
 """Keep redaction through critical-line recovery, chains, and fallbacks."""
 
+from unittest import mock
+
 import pytest
 
 import src.engine
@@ -20,6 +22,7 @@ import src.processors.env
 import src.processors.file_content
 import src.processors.generic
 from src import config
+from src import delta
 
 
 @pytest.fixture
@@ -183,6 +186,43 @@ class BrokenCleanup(src.processors.generic.GenericProcessor):
         raise ValueError("cleanup failed")
 
 
+class InvalidSecondary(ChainRedactor):
+    name = "invalid_secondary"
+    invalid_output = None
+
+    def process(self, command, output):
+        return self.invalid_output
+
+
+class InvalidCleanup(src.processors.generic.GenericProcessor):
+    invalid_output = None
+
+    def clean(self, text):
+        return self.invalid_output
+
+
+class UnhelpfulPrimary(ChainStarter):
+    chain_to = None
+
+    def process(self, command, output):
+        return output + "\nadditional context"
+
+
+class RedactingGeneric(src.processors.generic.GenericProcessor):
+    def redacted_secrets(self, command, output):
+        return "synthetic-error-secret" in output
+
+    def process(self, command, output):
+        return output.replace("synthetic-error-secret", "***")
+
+
+class InvalidRedactingGeneric(RedactingGeneric):
+    def clean(self, text):
+        if "API_KEY=***" in text:
+            return None
+        return super().clean(text)
+
+
 @pytest.mark.parametrize("failure_stage", ["chain", "cleanup"])
 def test_post_redaction_failure_retains_last_safe_output(engine, failure_stage):
     primary = ChainStarter()
@@ -207,6 +247,96 @@ def test_post_redaction_failure_retains_last_safe_output(engine, failure_stage):
     assert changed
     assert "API_KEY=***" in compressed
     assert "synthetic-error-secret" not in compressed
+    assert safe_engine.last_event["redacted"] is True
+
+
+@pytest.mark.parametrize("failure_stage", ["chain", "cleanup"])
+@pytest.mark.parametrize("invalid_output", [None, 0, b"private", ["private"]])
+def test_invalid_extension_result_retains_prior_redaction(
+    engine, failure_stage, invalid_output, caplog
+):
+    primary = ChainStarter()
+    primary.chain_to = ["chain_redactor"]
+    secondary = InvalidSecondary()
+    secondary.invalid_output = invalid_output
+    fallback = src.processors.generic.GenericProcessor()
+    if failure_stage == "chain":
+        primary.chain_to.append("invalid_secondary")
+    else:
+        fallback = InvalidCleanup()
+        fallback.invalid_output = invalid_output
+    safe_engine = src.engine.CompressionEngine(
+        [primary, ChainRedactor(), secondary, fallback]
+    )
+
+    compressed, _, changed = safe_engine.compress(
+        "chain", "prefix:API_KEY=synthetic-error-secret"
+    )
+
+    assert changed
+    assert "API_KEY=***" in compressed
+    assert "synthetic-error-secret" not in compressed
+    assert safe_engine.last_event["redacted"] is True
+    assert "private" not in caplog.text
+    assert "synthetic-error-secret" not in caplog.text
+    assert all(record.exc_info is None for record in caplog.records)
+
+
+@pytest.mark.parametrize("route", ["direct", "mismatch"])
+@pytest.mark.parametrize("invalid_cleanup", [False, True])
+def test_generic_redaction_survives_cleanup_recovery_and_ratio_gates(
+    engine, route, invalid_cleanup
+):
+    generic_processor = (
+        InvalidRedactingGeneric() if invalid_cleanup else RedactingGeneric()
+    )
+    processors = [generic_processor]
+    if route == "mismatch":
+        processors.insert(0, UnhelpfulPrimary())
+    safe_engine = src.engine.CompressionEngine(processors)
+
+    compressed, processor, changed = safe_engine.compress(
+        "chain", "API_KEY=synthetic-error-secret\nerror: service unavailable"
+    )
+
+    assert changed
+    assert processor == "generic"
+    assert "API_KEY=***" in compressed
+    assert "synthetic-error-secret" not in compressed
+    assert "error: service unavailable" in compressed
+    assert safe_engine.last_event["redacted"] is True
+
+
+def test_invalid_primary_result_is_rejected_at_extension_boundary(engine):
+    primary = InvalidSecondary()
+    primary.can_handle = lambda command: True
+    unsafe_engine = src.engine.CompressionEngine(
+        [primary, src.processors.generic.GenericProcessor()]
+    )
+    with pytest.raises(TypeError, match="Processor output must be text"):
+        unsafe_engine.compress("chain", "ordinary output")
+
+
+def test_delta_does_not_reparse_raw_input_after_generic_fallback_redaction(
+    engine, monkeypatch
+):
+    monkeypatch.setitem(config._config, "delta_enabled", True)
+    safe_engine = src.engine.CompressionEngine(
+        [UnhelpfulPrimary(), RedactingGeneric()]
+    )
+    raw = "API_KEY=synthetic-error-secret\nerror: service unavailable"
+    safe_engine.compress("chain", raw)
+    with mock.patch.object(safe_engine, "diagnostics") as parse:
+        actual = delta.apply(
+            "chain",
+            raw,
+            mock.sentinel.safe_fallback,
+            engine=safe_engine,
+            exit_code=0,
+            session_id="test-session",
+        )
+    assert actual is mock.sentinel.safe_fallback
+    parse.assert_not_called()
 
 
 def test_chain_failure_before_successful_redaction_still_raises(engine):

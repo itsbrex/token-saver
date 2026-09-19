@@ -12,8 +12,11 @@
 
 """Tests for the token-saver CLI subcommands."""
 
+import argparse
 import json
 import os
+import pathlib
+import shutil
 import subprocess
 import sys
 
@@ -73,6 +76,26 @@ class TestStatsCommand:
         data = json.loads(stdout)
         assert "session" in data
         assert "lifetime" in data
+
+    def test_stats_callback_preserves_host_arguments_during_render(
+        self, monkeypatch
+    ):
+        from src import cli
+        from src import stats
+
+        original_argv = ["host-app", "--unrelated-option"]
+        monkeypatch.setattr(sys, "argv", original_argv)
+        received = []
+
+        def render(arguments):
+            assert sys.argv is original_argv
+            received.append(arguments)
+
+        monkeypatch.setattr(stats, "main", render)
+        cli.cmd_stats(argparse.Namespace(json=True))
+        cli.cmd_stats(argparse.Namespace(json=False))
+        assert received == [["--json"], []]
+        assert original_argv == ["host-app", "--unrelated-option"]
 
 
 class TestNoCommand:
@@ -286,3 +309,53 @@ class TestBinScript:
         )
         assert result.returncode == 0, result.stderr
         assert f"token-saver v{src.__version__}" in result.stdout
+
+
+def test_explain_and_core_work_without_host_adapter_package(tmp_path):
+    runtime = tmp_path / "runtime"
+    shutil.copytree(
+        pathlib.Path(REPO_DIR) / "src",
+        runtime / "src",
+        ignore=shutil.ignore_patterns("__pycache__"),
+    )
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    environment = dict(os.environ)
+    for name in tuple(environment):
+        if name.startswith("TOKEN_SAVER_"):
+            environment.pop(name)
+    environment.update(
+        HOME=str(profile),
+        USERPROFILE=str(profile),
+        APPDATA=str(profile),
+        TOKEN_SAVER_DB_DIR=str(profile),
+    )
+    program = """
+import argparse
+import pathlib
+import sys
+sys.path.insert(0, sys.argv[1])
+from src import cli
+from src import core
+loaded_root = pathlib.Path(cli.__file__).resolve().parent.parent
+assert loaded_root == pathlib.Path(sys.argv[1]).resolve()
+assert core.should_compress("git status")
+assert not core.should_compress("sudo git status")
+cli.cmd_explain(argparse.Namespace(command_str="git status", format="json"))
+assert "scripts.hook_pretool" not in sys.modules
+"""
+    result = subprocess.run(  # noqa: S603 — fixed isolated runtime probe.
+        [sys.executable, "-I", "-c", program, str(runtime)],
+        cwd=profile,
+        env=environment,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=20,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    decision = json.loads(result.stdout)
+    assert decision["compressible"] is True
+    assert decision["processor"] == "git"
+    assert list(profile.iterdir()) == []

@@ -42,13 +42,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Installed scripts locate their sibling packages before importing them.
 # pylint: disable=wrong-import-position
-import scripts.hook_pretool
 import src.chain_utils
 import src.console
 import src.diffstat
 import src.engine
+from src import command_policy
 from src import config
 from src import core
+from src import delta
 
 # --- Debug logging (writes to data_dir/hook.log when TOKEN_SAVER_DEBUG=true)
 # ---
@@ -452,7 +453,7 @@ def main():
     # the original command string exactly as given, uncompressed — the same
     # fail-safe already used below when the chain rewrite fails its shell
     # syntax check.
-    if not scripts.hook_pretool.is_compressible(command_str):
+    if not command_policy.is_compressible(command_str):
         _log.warning(
             "Re-validation rejected a command hook_pretool.py had classified "
             "as compressible, running uncompressed: %r",
@@ -603,7 +604,8 @@ def main():
         print(compressed, end="")
         sys.exit(returncode)
 
-    # --- Single-command path (unchanged behavior) ---
+    # Delta is limited to this path: chained segments have a shared shell
+    # environment and may not have individually reliable exit statuses.
     stdout, stderr, returncode = _run_command(
         command_str, timeout, merge_stderr=False
     )
@@ -634,6 +636,15 @@ def main():
             diff_summary,
         )
         sys.exit(returncode)
+
+    result = delta.apply(
+        command_str,
+        output,
+        result,
+        engine=engine,
+        exit_code=returncode,
+        session_id=os.environ.get("TOKEN_SAVER_SESSION", ""),
+    )
 
     # Savings are attributed to the full command string (not just the primary)
     # so stats group by what the user actually typed.

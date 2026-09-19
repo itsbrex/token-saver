@@ -1674,18 +1674,20 @@ class TestChainPerSegmentCompression:
         assert "segB" in result.stdout
         assert "__TS_MARK_" not in result.stdout
 
-    def test_wrap_reimports_is_compressible_for_revalidation(self):
-        """Use the hook classifier for independent wrapper revalidation.
+    def test_wrap_uses_runtime_policy_for_revalidation(self):
+        """Share eligibility policy without importing the host adapter.
 
         Regression for GitHub issue #49 sub-claim 3: wrap.py must not blindly
         trust hook_pretool.py's classification of a chain as safe — it re-runs
         is_compressible() itself before applying the chain rewrite (marker
         injection, per-segment splitting).
         """
+        from src import command_policy
+
         wrap = self._import_wrap()
         assert (
-            wrap.scripts.hook_pretool.is_compressible
-            is scripts.hook_pretool.is_compressible
+            wrap.command_policy.is_compressible
+            is command_policy.is_compressible
         )
 
     def test_e2e_wrap_skips_chain_rewrite_for_unsafe_chain(self):

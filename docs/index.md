@@ -7,17 +7,25 @@ nav_order: 1
 
 # Token-Saver: CLI output compression for AI coding assistants
 
-**Content-aware output compression for AI coding assistants.**
+**Keep the signal. Stop rereading the same failures.**
 
 Token-Saver is a Claude Code and Antigravity CLI plugin that intercepts the
 verbose terminal output your agent reads — `git diff`, `pytest`, `npm
 install`, `terraform plan`, `kubectl` — and compresses it deterministically
-before it reaches the model. 36 specialized processors understand the shape
-of each tool's output, so errors, diffs, and stack traces survive while
-progress bars, passing tests, and installation logs are dropped.
+before it reaches the model. 36 specialized processors reduce progress logs and
+boilerplate, with failure fixtures and configurable quality contracts checking
+important diagnostics.
+
+**Version 3.0.0 adds [Delta](delta.md): see what changed after the last edit.**
+Repeated pytest and Ruff failures can become a concise inventory; new and changed
+diagnostics keep their full details, and retained details can be retrieved on
+demand. Delta is experimental, opt-in, and supports selected commands through
+Claude Code.
 
 Compression runs locally with no LLM calls or output uploads. With the same
-configuration, the same input produces the same output. An optional GitHub
+configuration, ordinary compression gives the same output for the same input.
+Delta additionally compares retained session history and assigns opaque run
+identifiers for retrieval. An optional GitHub
 release check is the only built-in network request; compression works offline.
 
 ## Results
@@ -59,6 +67,7 @@ for manual installation, Antigravity CLI setup, and upgrading from v1.x.
 
 ## Documentation
 
+- [Delta: changes between runs](delta.md) — activation, diagnostic states, retained details, and reproducible benchmarks.
 - [Compression quality gates](quality-gates.md) — compress saved logs and check budgets and required diagnostics before adopting new rules.
 - [Architecture](architecture.md) — extension points and responsibilities for contributors.
 
