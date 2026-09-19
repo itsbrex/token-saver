@@ -49,6 +49,7 @@ import src.diffstat
 import src.engine
 from src import config
 from src import core
+from src import delta
 
 # --- Debug logging (writes to data_dir/hook.log when TOKEN_SAVER_DEBUG=true)
 # ---
@@ -603,7 +604,8 @@ def main():
         print(compressed, end="")
         sys.exit(returncode)
 
-    # --- Single-command path (unchanged behavior) ---
+    # Delta is limited to this path: chained segments have a shared shell
+    # environment and may not have individually reliable exit statuses.
     stdout, stderr, returncode = _run_command(
         command_str, timeout, merge_stderr=False
     )
@@ -634,6 +636,15 @@ def main():
             diff_summary,
         )
         sys.exit(returncode)
+
+    result = delta.apply(
+        command_str,
+        output,
+        result,
+        engine=engine,
+        exit_code=returncode,
+        session_id=os.environ.get("TOKEN_SAVER_SESSION", ""),
+    )
 
     # Savings are attributed to the full command string (not just the primary)
     # so stats group by what the user actually typed.

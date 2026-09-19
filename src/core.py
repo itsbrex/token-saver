@@ -127,7 +127,7 @@ def compress(
     # This best-effort boundary must not block the host command or hook.
     # pylint: disable-next=broad-exception-caught
     except Exception:
-        _log.exception("Compression failed for %r — passing through", command)
+        _log.warning("Compression failed; passing through captured output")
         compressed, processor_name, was_compressed = (
             output,
             "passthrough",
@@ -173,7 +173,7 @@ def audit_log(
     # This best-effort boundary must not block the host command or hook.
     # pylint: disable-next=broad-exception-caught
     except Exception:
-        _log.debug("Audit logging failed", exc_info=True)
+        _log.warning("Audit logging failed")
 
 
 def record_saving(
@@ -205,7 +205,7 @@ def record_saving(
     # This best-effort boundary must not block the host command or hook.
     # pylint: disable-next=broad-exception-caught
     except Exception:
-        _log.exception("Tracking failed")
+        _log.warning("Tracking failed")
 
 
 def record_mismatches(items: list[tuple[str, str, int]], platform: str) -> None:
@@ -233,7 +233,7 @@ def record_mismatches(items: list[tuple[str, str, int]], platform: str) -> None:
     # This best-effort boundary must not block the host command or hook.
     # pylint: disable-next=broad-exception-caught
     except Exception:
-        _log.exception("Mismatch tracking failed")
+        _log.warning("Mismatch tracking failed")
 
 
 def record_result(result: CompressResult, command: str, platform: str) -> None:

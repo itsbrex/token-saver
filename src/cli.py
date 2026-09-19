@@ -612,6 +612,10 @@ def main():
     """CLI entry point."""
     # Defer this adapter dependency until its command or hook is used.
     # pylint: disable-next=import-outside-toplevel
+    from src import delta_cli  # noqa: PLC0415
+
+    # Keep optional CLI adapters out of library imports.
+    # pylint: disable-next=import-outside-toplevel
     from src import quality_cli  # noqa: PLC0415
 
     console.use_utf8_io()
@@ -621,6 +625,7 @@ def main():
     )
     subparsers = parser.add_subparsers(dest="command")
     quality_cli.add_quality_parsers(subparsers)
+    delta_cli.add_delta_parsers(subparsers)
 
     # version
     subparsers.add_parser("version", help="Show current version")

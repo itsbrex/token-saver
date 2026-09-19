@@ -17,6 +17,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -38,6 +39,26 @@ class TestShouldCompress:
 
 
 class TestCompress:
+    def test_failed_extension_logs_no_command_output_or_exception(self, caplog):
+        compressor = mock.Mock()
+        compressor.compress.side_effect = RuntimeError("private-exception")
+        compressor.last_event = {}
+        result = core.compress(
+            "pytest private-argument",
+            "AssertionError: private-output",
+            engine=compressor,
+            exit_code=1,
+        )
+        assert result.compressed == "AssertionError: private-output"
+        assert "Compression failed" in caplog.text
+        for value in (
+            "private-argument",
+            "private-output",
+            "private-exception",
+        ):
+            assert value not in caplog.text
+        assert all(record.exc_info is None for record in caplog.records)
+
     def test_compresses_verbose_output(self):
         output = "\n".join(f"{i:07x} commit {i}" for i in range(60)) + "\n"
         result = core.compress("git log --oneline", output)

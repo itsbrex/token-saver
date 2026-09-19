@@ -25,6 +25,7 @@ from src.processors import critical
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
+    from src import diagnostics as diagnostics_lib
     from src.processors import base
 
 _LOGGER = logging.getLogger(__name__)
@@ -59,6 +60,8 @@ class CompressionEngine:
         processors: Enabled processor instances in routing priority order.
         last_event: Content-free metadata about the most recent compression,
             including the attempted and resulting processors and size changes.
+            A true ``redacted`` flag forbids later adapters from reparsing the
+            original output, whose secrets may use extension-specific formats.
     """
 
     processors: list[base.Processor]
@@ -152,6 +155,31 @@ class CompressionEngine:
             return processor
         return None
 
+    def diagnostics(
+        self, command: str, output: str, *, exit_code: int | None = None
+    ) -> diagnostics_lib.Snapshot | None:
+        """Extract optional structured diagnostics through the active processor.
+
+        This does not persist output or change ordinary compression behavior.
+        Callers storing diagnostics must sanitize the input first. Unsupported
+        or ambiguous formats return None; extension failures propagate to the
+        integration's isolation boundary.
+
+        Args:
+            command: Original command label; never executed here.
+            output: Captured, sanitized output before lossy compression.
+            exit_code: Captured exit status, or None when unavailable.
+
+        Returns:
+            A conservative snapshot, or None when diagnostics are unavailable.
+        """
+        if not self._settings.get("enabled"):
+            return None
+        processor = self._select(command, exit_code)
+        if processor is None:
+            return None
+        return processor.diagnostics(command, output, exit_code=exit_code)
+
     def _call_process(
         self,
         processor: base.Processor,
@@ -174,17 +202,52 @@ class CompressionEngine:
 
         Returns:
             The processor's transformed output.
+
+        Raises:
+            TypeError: An extension violates the text-output contract.
         """
         if processor.wants_exit_code:
             # Processors that opt in via wants_exit_code declare a wider
             # signature than the base class's abstract `process()` — mypy
             # only sees the base signature here, hence the ignore.
-            return processor.process(
+            result = processor.process(
                 command,
                 output,
                 exit_code=exit_code,  # type: ignore[call-arg]
             )
-        return processor.process(command, output)
+        else:
+            result = processor.process(command, output)
+        if not isinstance(result, str):
+            raise TypeError("Processor output must be text")
+        return result
+
+    def _clean_output(self, output: str, *, redacted: bool) -> str:
+        """Apply optional cleanup while retaining the last safe text result.
+
+        Args:
+            output: Text returned by a completed processing pass.
+            redacted: Whether any completed pass removed sensitive content.
+
+        Returns:
+            Cleaned text, or the supplied redacted text if cleanup fails.
+
+        Raises:
+            Exception: Cleanup failed before any successful redaction.
+        """
+        try:
+            cleaned = self._generic.clean(output)
+            if not isinstance(cleaned, str):
+                raise TypeError("Processor cleanup must return text")
+            return cleaned
+        # Cleanup is an extension boundary. Neither exceptions nor invalid
+        # return values may replace the last successfully redacted string.
+        except Exception:  # pylint: disable=broad-exception-caught
+            if not redacted:
+                raise
+            _LOGGER.warning(
+                "Processor cleanup failed; retaining redacted output"
+            )
+            return output
 
     def _recover_critical(
         self, original: str, compressed: str, processor: base.Processor
@@ -331,17 +394,7 @@ class CompressionEngine:
         # If a specialized processor handled it, also run generic
         # cleanup (ANSI strip, blank line collapse) but not truncation
         if processor is not self._generic:
-            try:
-                compressed = self._generic.clean(compressed)
-            # Cleanup can be supplied by a plugin. Its failure must never undo
-            # redaction; diagnostics deliberately exclude exception contents.
-            except Exception:  # pylint: disable=broad-exception-caught
-                if not redacted:
-                    raise
-                _LOGGER.warning(
-                    "Processor cleanup failed; retaining redacted output"
-                )
-                # Cleanup is optional; exposing removed secrets is not.
+            compressed = self._clean_output(compressed, redacted=redacted)
 
         # Critical-looking lines may themselves contain the secrets that were
         # just removed (e.g. API_KEY=error-secret). The engine has no generic
@@ -374,6 +427,7 @@ class CompressionEngine:
                 compressed_len,
                 failure_fallback,
             )
+            self.last_event["redacted"] = redacted
             return compressed, processor.name, True
 
         # Specialized processor didn't compress enough on its own — a
@@ -386,17 +440,23 @@ class CompressionEngine:
             generic_compressed = self._call_process(
                 self._generic, command, output, exit_code
             )
-            generic_compressed = self._generic.clean(generic_compressed)
-            generic_compressed = self._recover_critical(
-                output, generic_compressed, self._generic
+            generic_redacted = self._generic.redacted_secrets(command, output)
+            generic_compressed = self._clean_output(
+                generic_compressed, redacted=generic_redacted
             )
+            if not generic_redacted:
+                generic_compressed = self._recover_critical(
+                    output, generic_compressed, self._generic
+                )
             generic_len = len(generic_compressed)
             generic_gain = (
                 (original_len - generic_len) / original_len
                 if original_len > 0
                 else 0
             )
-            if generic_len < original_len and generic_gain >= min_ratio:
+            if generic_redacted or (
+                generic_len < original_len and generic_gain >= min_ratio
+            ):
                 self._set_event(
                     processor.name,
                     "generic",
@@ -406,6 +466,7 @@ class CompressionEngine:
                     generic_len,
                     failure_fallback,
                 )
+                self.last_event["redacted"] = generic_redacted
                 return generic_compressed, "generic", True
 
         self._set_event(

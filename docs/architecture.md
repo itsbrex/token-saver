@@ -1,6 +1,6 @@
 ---
 title: Architecture
-description: How Token-Saver separates processor discovery, compression policy, quality checks, replay, platform hooks, and local savings storage.
+description: How Token-Saver separates processors, compression policy, opt-in Delta comparisons, quality checks, platform hooks, and local persistence.
 permalink: /architecture/
 nav_order: 7
 ---
@@ -30,6 +30,11 @@ CLI replay -> manifest / files --+                      |
 
 Default processor discovery -> processor instances -> registry
 Explicit processor instances -----------------------> registry
+
+Claude single-command result -> Delta -> redaction -> processor diagnostics
+                                |
+                                +-> compare / render <-> snapshot store
+CLI delta show / clear ---------------------------------> snapshot store
 ```
 
 The registry supplies the ordered processor list and named fallback. The engine
@@ -47,6 +52,25 @@ uses those objects directly; it does not ask the registry to parse output.
 | `src/core.py` | Share hook result handling, audit logging, and savings/mismatch recording. | Keeps the two platform adapters aligned. |
 | `scripts/` and `antigravity/` | Implement host protocols and shell execution where required. | Claude wraps commands before execution; Antigravity receives captured output. |
 | `src/tracker.py` | Store and query local savings, sessions, and processor mismatches. | SQLite persistence, separate from output transformation. |
+| `src/diagnostics.py` | Define immutable diagnostic and snapshot values. | No persistence; parsers receive sanitized output and report conservative observations. |
+| `src/delta.py` | Compare snapshots and render current diagnostic state. | Opt-in orchestration for completed single Claude wrapper commands; does not execute commands. |
+| `src/delta_redaction.py` | Mask recognized secret formats before Delta uses captured output. | Deterministic text transformation; not a universal secret detector. |
+| `src/delta_store.py` | Retain private, bounded, expiring snapshots. | Separate SQLite database containing already sanitized payloads and hashed scope metadata. |
+| `src/delta_cli.py` | Read snapshot details and clear retained history. | CLI presentation and status codes; does not rerun commands. |
+
+## SOLID in practice
+
+| Principle | Concrete boundary |
+|---|---|
+| Single responsibility | Processors parse; the wrapper executes; the store manages retention; the CLI presents results. |
+| Open/closed | A new diagnostic family implements the optional processor method; the engine and wrapper need no tool-specific branch. |
+| Substitutability | Existing processors keep their signatures and return shapes; the default diagnostic method declines with `None`. |
+| Interface segregation | Ordinary compression does not require diagnostic support, a snapshot store, or a platform host. |
+| Dependency inversion | The engine accepts processor instances and settings; quality evaluation accepts the small `Compressor` protocol. Delta's pure rendering can be tested with snapshot values independently of SQLite. |
+
+These are working boundaries, not a requirement to add an interface around every
+function. The `open_store()` integration seam supplies the default persistence
+adapter; format recognition remains entirely inside processors.
 
 ## Processor extension contract
 
@@ -68,13 +92,72 @@ The optional capabilities on `Processor` have behavioral obligations:
   Otherwise the engine selects the generic fallback for that failure.
 - `wants_exit_code` means `process()` also accepts the `exit_code` keyword.
 - `redacted_secrets()` identifies calls whose redacted result must survive the
-  compression-ratio acceptance check.
+  compression-ratio acceptance check. The engine exposes this fact in
+  `last_event["redacted"]`; adapters must not reparse the original output after
+  such a result, because custom masking rules may be unknown to them.
 - `chain_to` requests secondary processors; the engine bounds chaining and
   avoids revisiting a processor.
+- `diagnostics(command, output, *, exit_code=None)` optionally returns a
+  `diagnostics.Snapshot` for complete, supported output. Its default returns
+  `None`, so existing processors need no changes. The caller sanitizes input
+  before parsing; uncertain formats must decline rather than infer results.
 
 Implementations must remain compatible with these contracts. Precision tests,
 failure fixtures, and the compression ratchet check concrete cases; they do not
 establish that every possible output format is lossless.
+
+## Delta comparison boundary
+
+The experimental [Delta integration](delta.md) operates after a single Claude
+wrapper execution. The wrapper first obtains the ordinary compression result,
+then offers the completed output and actual status to `delta.apply()`. Disabled
+Delta, missing session context, unsupported shell syntax, oversized input, and
+unsupported statuses retain ordinary behavior. Chains, dry runs, stdin captures,
+Antigravity, and the portable quality commands do not use this integration.
+An ordinary result marked as redacted also bypasses Delta: preserving a
+processor's masking takes precedence over constructing a snapshot from raw text.
+
+For eligible input, Delta masks recognized secrets before asking
+`CompressionEngine.diagnostics()` to delegate to the selected processor. The
+engine has no pytest- or Ruff-specific branches. The existing test and lint
+processors opt into the diagnostic contract. Parsers provide stable identifiers,
+complete diagnostic details, explicitly observed passing test IDs, a current
+summary, and retained surrounding context. They perform no persistence.
+Pytest traceback frame separators remain inside their failure block. Parametrized
+identities are matched against complete failure titles rather than split at
+punctuation that may belong to a test parameter.
+Repeated multiline short summaries are omitted only after matching a complete
+exception block already retained verbatim in the primary traceback. Partial or
+different summaries remain in context. Rendering and retrieval therefore retain
+the original evidence once without classifying unknown text as boilerplate.
+
+Delta hashes the session, real working directory, exact command, family, schema,
+and Token-Saver version into a comparison scope. It reads the latest snapshot,
+stores the full current snapshot, and renders the difference. Each current
+diagnostic remains named. New and changed details are shown fully; only identical
+details are summarized. Absence from the current inventory means `NOT OBSERVED`
+unless an explicit passing test observation supports `PASSED`.
+
+The sanitized ordinary result wins when it is no larger than the Delta rendering
+and contains every full new or changed diagnostic block. Thus unchanged repeats
+emit Delta only when shorter, while fresh diagnostic preservation can produce a
+larger result than v2 compression. The stored snapshot becomes a baseline in
+either case, so retained baselines do not always have a retrieval hint shown.
+
+`delta_store.Store` owns SQLite transactions, private data paths, a 1 MiB payload
+limit, read-time expiry, and a global retained-run cap. It does not sanitize its
+own inputs or recover corrupt data by deleting it. The integration owns failure
+isolation and records content-free diagnostics. Once masking has occurred,
+fallback output must retain it. `delta show` validates a stored snapshot and
+sanitizes presentation again; `delta clear` removes history across all scopes.
+Insertion order selects the latest snapshot and enforces the count cap. Records
+dated in the future after a backward clock adjustment are discarded on access,
+so a clock change cannot extend retention or evict a fresh result in their favor.
+
+The three Delta configuration settings are global/environment-only because they
+control retaining captured output. They are separate from ordinary compression
+thresholds and from the metadata-only savings database. This boundary keeps
+stateless `compress()` behavior and existing processor extension points intact.
 
 ## Construct an engine with explicit dependencies
 
@@ -83,12 +166,12 @@ plugins. Supplying settings also separates engine thresholds from the default
 configuration reader:
 
 ```python
-from src.engine import CompressionEngine
-from src.processors.generic import GenericProcessor
-from src.processors.git import GitProcessor
+from src import engine
+from src.processors import generic
+from src.processors import git
 
-engine = CompressionEngine(
-    [GitProcessor(), GenericProcessor()],
+compressor = engine.CompressionEngine(
+    [git.GitProcessor(), generic.GenericProcessor()],
     settings={
         "enabled": True,
         "disabled_processors": [],
@@ -99,7 +182,7 @@ engine = CompressionEngine(
     },
 )
 
-output, processor_name, changed = engine.compress(
+output, processor_name, changed = compressor.compress(
     "git status",
     "On branch main\nnothing to commit, working tree clean\n",
     exit_code=0,
@@ -125,14 +208,14 @@ The engine satisfies it without inheriting from another base class. Tests or
 other applications can supply an alternative implementation of that signature.
 
 ```python
-from src.evaluation import QualityPolicy, evaluate
+from src import evaluation
 
-result = evaluate(
-    engine,
+result = evaluation.evaluate(
+    compressor,
     "git status",
     "On branch main\nnothing to commit, working tree clean\n",
     exit_code=0,
-    policy=QualityPolicy(
+    policy=evaluation.QualityPolicy(
         max_tokens=100,
         must_preserve=("main",),
     ),
@@ -171,9 +254,11 @@ The hooks have different responsibilities. Claude's pre-tool adapter checks
 eligibility and rewrites accepted commands through `wrap.py`, which executes
 them and preserves execution status. Antigravity's after-tool adapter transforms
 already captured output. Shared core functions connect compression results to
-audit and tracking. SQLite stores command metadata and size measurements, not
-complete captured output; command strings themselves may still contain sensitive
-information.
+audit and tracking. The savings SQLite database stores command metadata and size
+measurements, not complete captured output; command strings themselves may still
+contain sensitive information. Opting into Delta creates a separate store of
+sanitized diagnostic snapshots, including captured context, with its own
+retention limits. See the [Delta storage details](delta.md#local-storage-and-retention).
 
 These boundaries provide focused places to extend the system while preserving
 the existing CLI, processor API, and platform behavior. More configuration

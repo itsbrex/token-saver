@@ -14,6 +14,8 @@
 
 import abc
 
+from src import diagnostics
+
 # Matches any Python invocation: python, python3, python3.11,
 # .venv/bin/python3, /usr/bin/python, etc.
 PYTHON_CMD = r"(?:\S+/)?python[23]?(?:\.\d+)?"
@@ -106,6 +108,26 @@ class Processor(abc.ABC):
     #: ``exit_code`` to processors that set this flag; everyone else keeps
     #: the simpler two-argument signature.
     wants_exit_code: bool = False
+
+    def diagnostics(
+        self, command: str, output: str, *, exit_code: int | None = None
+    ) -> diagnostics.Snapshot | None:
+        """Optionally describe complete diagnostics for repeated-run comparison.
+
+        This extension does not change ``process()`` or require existing user
+        processors to implement it. Callers must sanitize output before parsing.
+
+        Args:
+            command: Original command label identifying one supported run.
+            output: Captured output after secret redaction.
+            exit_code: Command status, or None when unavailable.
+
+        Returns:
+            A complete snapshot, or None when comparison is unsupported or
+            uncertain. The default declines every input.
+        """
+        del command, output, exit_code
+        return None
 
     @abc.abstractmethod
     def can_handle(self, command: str) -> bool:

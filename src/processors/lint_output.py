@@ -16,7 +16,128 @@ import collections
 import re
 
 from src import config
+from src import diagnostics
 from src.processors import base
+
+_RUFF_LOCATION = re.compile(r"^(.+?):([1-9]\d*):([1-9]\d*): ([A-Z]+\d+) (.+)$")
+_RUFF_HEADER = re.compile(r"^([A-Z]+\d+) (.+)$")
+_RUFF_ARROW = re.compile(r"^\s*--> (.+?):([1-9]\d*):([1-9]\d*)$")
+
+
+def _ruff_arguments(command: str) -> bool:
+    """Limit snapshots to non-mutating checks in supported text formats."""
+    arguments = diagnostics.command_arguments(command, ("ruff",))
+    if arguments is None or arguments[:1] != ["check"]:
+        return False
+    for index, argument in enumerate(arguments[1:], start=1):
+        if argument.startswith(
+            (
+                "--fix",
+                "--unsafe-fixes",
+                "--diff",
+                "--watch",
+                "--statistics",
+                "--show",
+                "--exit-zero",
+                "--output-file",
+            )
+        ) or argument in ("-w", "--quiet", "-q", "-o"):
+            return False
+        if argument == "--output-format":
+            if arguments[index + 1 : index + 2] not in (["full"], ["concise"]):
+                return False
+        elif argument.startswith("--output-format=") and argument.partition(
+            "="
+        )[2] not in ("full", "concise"):
+            return False
+    return True
+
+
+def _ruff_detail_end(lines: list[str], start: int) -> int:
+    """Consume source gutters and help, leaving unknown tool text as context."""
+    stop = start
+    while stop < len(lines):
+        line = lines[stop].rstrip("\r\n")
+        if (
+            not line.strip()
+            or re.fullmatch(r"\s*(?:\d+\s*)?\|.*", line)
+            or line.startswith("help: ")
+        ):
+            stop += 1
+        else:
+            break
+    return stop
+
+
+def _ruff_snapshot(
+    command: str, output: str, exit_code: int | None
+) -> diagnostics.Snapshot | None:
+    """Parse default full or concise Ruff diagnostics with verified totals."""
+    if not _ruff_arguments(command) or exit_code not in (None, 0, 1):
+        return None
+    lines = output.splitlines(keepends=True)
+    result: list[diagnostics.Diagnostic] = []
+    consumed: set[int] = set()
+    identifiers: set[str] = set()
+    summaries = []
+    index = 0
+    while index < len(lines):
+        line = lines[index].rstrip("\r\n")
+        total = re.fullmatch(r"Found (\d+) errors?\.", line)
+        if total or line == "All checks passed!":
+            summaries.append((index, int(total[1]) if total else 0))
+            index += 1
+            continue
+        location = _RUFF_LOCATION.fullmatch(line)
+        header = _RUFF_HEADER.fullmatch(line)
+        detail_start = index + 1
+        if location:
+            path, row, column, rule, message = location.groups()
+        elif header and index + 1 < len(lines):
+            arrow = _RUFF_ARROW.fullmatch(lines[index + 1].rstrip("\r\n"))
+            if arrow is None:
+                return None
+            path, row, column = arrow.groups()
+            rule, message = header.groups()
+            detail_start = index + 2
+        else:
+            index += 1
+            continue
+        identifier = f"{path}:{row}:{column}:{rule}"
+        if (
+            identifier in identifiers
+            or len(result) >= diagnostics.MAX_DIAGNOSTICS
+        ):
+            return None
+        identifiers.add(identifier)
+        stop = _ruff_detail_end(lines, detail_start)
+        result.append(
+            diagnostics.Diagnostic(
+                identifier,
+                f"{rule} {message}",
+                "".join(lines[index:stop]),
+            )
+        )
+        consumed.update(range(index, stop))
+        index = stop
+    if len(summaries) != 1:
+        return None
+    summary_index, count = summaries[0]
+    if count != len(result) or (exit_code == 0 and count):
+        return None
+    if exit_code == 1 and not count:
+        return None
+    # Diagnostics after the total indicate concatenated or malformed output.
+    if any(index > summary_index for index in consumed):
+        return None
+    consumed.add(summary_index)
+    context = "".join(line for i, line in enumerate(lines) if i not in consumed)
+    return diagnostics.Snapshot(
+        family="ruff",
+        summary=lines[summary_index].rstrip("\r\n"),
+        diagnostics=tuple(result),
+        context=context,
+    )
 
 
 class LintOutputProcessor(base.Processor):
@@ -46,6 +167,22 @@ class LintOutputProcessor(base.Processor):
     def name(self) -> str:
         """The stable name used for processor routing and savings tracking."""
         return "lint"
+
+    def diagnostics(
+        self, command: str, output: str, *, exit_code: int | None = None
+    ) -> diagnostics.Snapshot | None:
+        """Describe complete Ruff check results in supported text formats.
+
+        Args:
+            command: Simple, non-mutating Ruff check invocation.
+            output: Complete, already-sanitized captured output.
+            exit_code: Actual command status, if known.
+
+        Returns:
+            A snapshot preserving full details and unrelated text, or None
+            when the format, count, identities, or completion is uncertain.
+        """
+        return _ruff_snapshot(command, output, exit_code)
 
     def can_handle(self, command: str) -> bool:
         """Return whether this processor supports the supplied command.

@@ -7,8 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-09-19
+
 ### Added
 
+- Experimental Delta in v3 for repeated `pytest` and `ruff check`
+  diagnostics in Claude Code. Opt-in comparisons retain full new and changed
+  failures, summarize unchanged failures, and distinguish explicitly passing
+  tests from diagnostics that were not observed again. Separate private local
+  snapshots expire on access and have bounded retention; `delta show` retrieves
+  details without re-execution and `delta clear` removes retained snapshots.
+  Unchanged repeats use ordinary compression when it is shorter; full new or
+  changed diagnostics take priority over output size. Valid snapshots still
+  establish a baseline when ordinary sanitized output is returned.
+  Delta retention settings accept only global configuration or environment
+  overrides. Includes a reproducible synthetic sequence benchmark counting
+  both targeted and complete detail retrieval.
+- A second Delta benchmark executes real pytest and Ruff commands on disposable
+  fixture projects, verifies edit/repeat/pass transitions and exit statuses,
+  and counts targeted and complete detail retrieval separately. Includes JSON
+  reports and POSIX quoting coverage for Windows executable paths.
 - Portable `compress` stdin filter with captured exit-status routing, JSON output and estimated token-budget checks.
 - Offline `replay` quality contracts: per-case and aggregate budgets, minimum savings, literal diagnostic preservation, and content-free CI reports. Includes a runnable fixture manifest.
 - Scoped `AGENTS.md` contributor guidance and documentation of architecture and quality gates.
@@ -26,6 +44,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Delta recognizes pytest helper-frame tracebacks and parametrized identities
+  containing summary delimiters. Exact repeated multiline exception summaries
+  are deduplicated without discarding unknown context or unique evidence.
+- Delta preserves custom processor redactions instead of reparsing the original
+  output, and rejects malformed snapshot schema versions and passed inventories.
+- Chained processors and cleanup validate textual results before replacing a
+  masked result. Generic mismatch fallback honors its own redaction contract.
+- Delta storage retains the latest inserted run after clock changes, discards
+  future-dated snapshots on access, and tolerates concurrent removal of optional
+  SQLite journals during permission checks.
+- Optional compression and tracking failures log content-free messages rather
+  than captured command arguments, exception text, or tracebacks.
+- Delta masks passwords in authenticated URLs with an empty username and
+  safely rejects excessively nested stored JSON. Pytest snapshots decline
+  contradictory passing/failing observations for a duplicate test identity.
+- Installed-tree Delta smoke coverage verifies default-off behavior, actual
+  execution counts, comparison, and targeted retrieval outside the checkout.
+  Installer tests isolate inherited storage/import settings and Windows e2e
+  commands use POSIX-compatible executable paths.
 - Prevented critical-line recovery and compression fallback from restoring already-redacted secret values; small environment outputs now redact sensitive assignments too.
 - Resolved savings database paths per tracker instance and honored `TOKEN_SAVER_DB_DIR` consistently, with tests isolated from the developer profile.
 
