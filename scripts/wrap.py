@@ -42,11 +42,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Installed scripts locate their sibling packages before importing them.
 # pylint: disable=wrong-import-position
-import scripts.hook_pretool
 import src.chain_utils
 import src.console
 import src.diffstat
 import src.engine
+from src import command_policy
 from src import config
 from src import core
 from src import delta
@@ -453,7 +453,7 @@ def main():
     # the original command string exactly as given, uncompressed — the same
     # fail-safe already used below when the chain rewrite fails its shell
     # syntax check.
-    if not scripts.hook_pretool.is_compressible(command_str):
+    if not command_policy.is_compressible(command_str):
         _log.warning(
             "Re-validation rejected a command hook_pretool.py had classified "
             "as compressible, running uncompressed: %r",

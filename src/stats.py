@@ -28,6 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # pylint: disable=wrong-import-position
 from src import config
 from src import console
+from src import stats_formatting
 from src import tracker as tracker_lib
 
 # pylint: enable=wrong-import-position
@@ -58,7 +59,7 @@ def _chars_to_tokens(n: int) -> int:
         A rounded token estimate using the configured characters-per-token
         ratio.
     """
-    return max(1, round(n / config.get("chars_per_token"))) if n > 0 else 0
+    return stats_formatting.estimate_tokens(n, config.get("chars_per_token"))
 
 
 def _format_tokens(n: int) -> str:
@@ -233,24 +234,32 @@ def _print_mismatches(mismatches):
     print()
 
 
-def main():
-    """Render tracker statistics as terminal text or JSON from sys.argv."""
+def main(argv: list[str] | None = None) -> None:
+    """Render tracker statistics as terminal text or JSON.
+
+    Args:
+        argv: Explicit arguments without the program name, or None to read
+            sys.argv. Neither the supplied list nor sys.argv is modified.
+    """
     console.use_utf8_io()
-    as_json = "--json" in sys.argv
+    arguments = sys.argv[1:] if argv is None else argv
+    as_json = "--json" in arguments
 
     # Allow passing a session ID to show stats for a specific session
     session_id = None
-    for i, arg in enumerate(sys.argv[1:], 1):
-        if arg == "--session" and i < len(sys.argv) - 1:
-            session_id = sys.argv[i + 1]
+    for i, arg in enumerate(arguments):
+        if arg == "--session" and i < len(arguments) - 1:
+            session_id = arguments[i + 1]
 
     tracker = tracker_lib.SavingsTracker(session_id=session_id)
-    session = tracker.get_session_stats()
-    lifetime = tracker.get_lifetime_stats()
-    top_processors = tracker.get_top_processors(limit=5)
-    top_commands = tracker.get_top_commands(limit=10)
-    mismatches = tracker.get_processor_mismatches(limit=10)
-    tracker.close()
+    try:
+        session = tracker.get_session_stats()
+        lifetime = tracker.get_lifetime_stats()
+        top_processors = tracker.get_top_processors(limit=5)
+        top_commands = tracker.get_top_commands(limit=10)
+        mismatches = tracker.get_processor_mismatches(limit=10)
+    finally:
+        tracker.close()
 
     if as_json:
         json.dump(

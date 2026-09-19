@@ -23,6 +23,8 @@ import threading
 import time
 from unittest import mock
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import src.tracker
@@ -120,13 +122,15 @@ class TestSavingsTracker:
         assert "[token-saver]" in msg
         assert "No compressions" in msg
 
-    def test_format_stats_with_data(self):
+    def test_format_stats_with_data(self, monkeypatch):
         self.tracker.record_saving(
             "git status", "git", 5000, 500, "claude_code"
         )
-        msg = self.tracker.format_stats_message()
-        assert "[token-saver]" in msg
-        assert "Lifetime" in msg
+        monkeypatch.setattr(config, "get", lambda key: 4)
+        assert self.tracker.format_stats_message() == (
+            "[token-saver] | Lifetime: 1 cmds, 1.1k tokens saved (90.0%)"
+            " | Session: 1 cmds, 1.1k tokens saved (90.0%)"
+        )
 
     def test_format_tokens(self):
         assert self.tracker._format_tokens(500) == "500 tokens"
@@ -319,6 +323,38 @@ class TestSavingsTracker:
         stats = tracker2.get_session_stats()
         assert stats["commands"] == 1
         tracker2.close()
+
+    def test_schema_recovery_recreates_tables_indexes_and_wal(self):
+        schema_query = (
+            "SELECT type, name, tbl_name, sql FROM sqlite_master "
+            "WHERE type IN ('table', 'index') ORDER BY type, name"
+        )
+        expected_schema = [
+            tuple(row) for row in self.tracker.conn.execute(schema_query)
+        ]
+        # This remains a valid SQLite file but has an incompatible savings
+        # table. Opening succeeds; creating its required indexes must fail.
+        self.tracker.conn.executescript(
+            "DROP TABLE savings; CREATE TABLE savings (id INTEGER);"
+        )
+        self.tracker.close()
+
+        recovered = src.tracker.SavingsTracker(session_id="schema-recovery")
+        try:
+            actual_schema = [
+                tuple(row) for row in recovered.conn.execute(schema_query)
+            ]
+            assert actual_schema == expected_schema
+            assert (
+                recovered.conn.execute("PRAGMA journal_mode").fetchone()[0]
+                == "wal"
+            )
+            recovered.record_saving("git status", "git", 1000, 200, "claude")
+            recovered.record_mismatch("docker ps", "docker", 1000, "claude")
+            assert recovered.get_session_stats()["saved"] == 800
+            assert recovered.get_processor_mismatches()[0]["count"] == 1
+        finally:
+            recovered.close()
 
     def test_corruption_recovery_closes_the_db_before_unlinking(self):
         """The handle must be closed *before* the file is deleted.
@@ -570,6 +606,49 @@ class TestStatsCLI:
         # git saved 12500 (5000-500 + 10000-2000), test saved 2200 (3000-800)
         assert data["top_processors"][0]["processor"] == "git"
         assert data["top_processors"][1]["processor"] == "test"
+
+    def test_explicit_arguments_select_session_without_process_arguments(
+        self, monkeypatch, capsys
+    ):
+        from src import stats
+
+        self._seed_data()
+        tracker = src.tracker.SavingsTracker(session_id="selected")
+        try:
+            tracker.record_saving("git diff", "git", 2000, 400, "claude_code")
+        finally:
+            tracker.close()
+        original_argv = ["host-app", "--session", "unrelated"]
+        monkeypatch.setattr(sys, "argv", original_argv)
+        arguments = ["--json", "--session", "selected"]
+
+        stats.main(arguments)
+
+        data = json.loads(capsys.readouterr().out)
+        assert data["session"]["commands"] == 1
+        assert data["session"]["saved"] == 1600
+        assert data["lifetime"]["commands"] == 4
+        assert sys.argv is original_argv
+        assert sys.argv == ["host-app", "--session", "unrelated"]
+        assert arguments == ["--json", "--session", "selected"]
+
+    def test_database_is_closed_when_statistics_query_fails(self):
+        from src import stats
+
+        tracker = src.tracker.SavingsTracker(session_id="failed-query")
+        with (
+            mock.patch.object(
+                stats.tracker_lib, "SavingsTracker", return_value=tracker
+            ),
+            mock.patch.object(
+                tracker,
+                "get_lifetime_stats",
+                side_effect=sqlite3.OperationalError("fixture query failure"),
+            ),
+            pytest.raises(sqlite3.OperationalError, match="fixture query"),
+        ):
+            stats.main(["--json"])
+        assert not _connection_is_open(tracker.conn)
 
 
 class TestPruneRetention:

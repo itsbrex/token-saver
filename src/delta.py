@@ -127,30 +127,37 @@ def render(
     Returns:
         A self-contained current state with full new or changed diagnostics.
     """
-    old = {}
-    if previous is not None and previous.family == snapshot.family:
-        old = {item.identifier: item for item in previous.diagnostics}
+    return _render(
+        snapshot,
+        diagnostics.compare(snapshot, previous),
+        exit_code=exit_code,
+        run_id=run_id,
+    )
+
+
+def _render(
+    snapshot: diagnostics.Snapshot,
+    changes: tuple[diagnostics.Change, ...],
+    *,
+    exit_code: int,
+    run_id: str = "",
+) -> str:
+    """Present already-classified observations without comparison policy."""
     lines = [
         f"[token-saver delta] {snapshot.family} | exit {exit_code}",
         snapshot.summary,
     ]
-    current = set()
-    for item in snapshot.diagnostics:
-        current.add(item.identifier)
-        before = old.get(item.identifier)
-        if before == item:
-            lines.append(f"UNCHANGED {item.identifier} — {item.summary}")
+    for change in changes:
+        item = change.diagnostic
+        if change.status == "PASSED":
+            summary = "explicitly passed this run"
+        elif change.status == "NOT OBSERVED":
+            summary = "not confirmed fixed"
         else:
-            status = "CHANGED" if before is not None else "NEW"
-            lines.append(f"{status} {item.identifier} — {item.summary}")
+            summary = item.summary
+        lines.append(f"{change.status} {item.identifier} — {summary}")
+        if change.needs_detail:
             lines.append(item.detail.rstrip("\r\n"))
-    for identifier in old:
-        if identifier in current:
-            continue
-        if identifier in snapshot.passed:
-            lines.append(f"PASSED {identifier} — explicitly passed this run")
-        else:
-            lines.append(f"NOT OBSERVED {identifier} — not confirmed fixed")
     if snapshot.context.strip():
         lines.extend(["", snapshot.context.rstrip("\r\n")])
     if run_id:
@@ -265,10 +272,11 @@ def apply(
             prior = store.latest(scope)
             previous = restore(prior[1])[0] if prior is not None else None
             run_id = store.save(scope, payload)
-        rendered = render(
+        changes = diagnostics.compare(snapshot, previous)
+        rendered = _render(
             snapshot,
+            changes,
             exit_code=exit_code,
-            previous=previous,
             run_id=run_id,
         )
     # Optional processors and storage must not break the executed command.
@@ -279,16 +287,10 @@ def apply(
     # A delta's headings may outweigh savings on short output. Ordinary
     # compression can win only if it still contains every new/changed detail:
     # the size gate must never reintroduce traceback truncation for those.
-    old = {}
-    if previous is not None and previous.family == snapshot.family:
-        old = {item.identifier: item for item in previous.diagnostics}
-    fresh = [
-        item
-        for item in snapshot.diagnostics
-        if old.get(item.identifier) != item
-    ]
     retains_fresh = all(
-        item.detail.rstrip("\r\n") in safe_fallback.compressed for item in fresh
+        change.diagnostic.detail.rstrip("\r\n") in safe_fallback.compressed
+        for change in changes
+        if change.needs_detail
     )
     if len(rendered) >= len(safe_fallback.compressed) and retains_fresh:
         return safe_fallback

@@ -34,6 +34,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Strengthened SOLID boundaries: host-independent injectable command policy, one
+  shared routing evaluator, pure Delta comparison, lazy audit/recording adapters
+  with a write-only persistence contract, and pure statistics formatting. Core
+  and CLI explanation no longer import the Claude hook. The CLI delegates
+  update operations to a dedicated adapter. Existing public entry points and
+  output formats remain compatible.
 - Align Python source, hooks, installers, examples, and tests with the Google
   Python Style Guide: absolute module imports, 80-column formatting, useful
   API documentation, and simple comprehensions. Add the vendored Google Pylint
@@ -44,6 +50,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Close optional tracking/statistics connections after write or query failures;
+  reuse the complete tracker schema during recovery. Avoid import-time audit
+  files, global CLI argument mutation, and sensitive logging traceback dumps
+  when an already-open audit journal fails to write or rotate. Optional release
+  lookup failures no longer print raw exception details.
 - Delta recognizes pytest helper-frame tracebacks and parametrized identities
   containing summary delimiters. Exact repeated multiline exception summaries
   are deduplicated without discarding unknown context or unique evidence.

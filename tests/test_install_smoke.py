@@ -111,6 +111,10 @@ def test_install_claude_populates_a_usable_tree(home):
     for rel in (
         "src/engine.py",
         "src/core.py",
+        "src/command_policy.py",
+        "src/telemetry.py",
+        "src/updater.py",
+        "src/stats_formatting.py",
         "src/config.py",
         "src/delta.py",
         "src/delta_cli.py",

@@ -68,8 +68,10 @@ def main():
 
     try:
         tracker = tracker_lib.SavingsTracker(session_id=cc_session)
-        message = tracker.format_stats_message()
-        tracker.close()
+        try:
+            message = tracker.format_stats_message()
+        finally:
+            tracker.close()
     # This best-effort boundary must not block the host command or hook.
     # pylint: disable-next=broad-exception-caught
     except Exception:  # noqa: S110

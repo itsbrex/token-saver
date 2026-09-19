@@ -12,47 +12,51 @@
 
 """Shared compression core used by both the Claude and Antigravity hooks.
 
-The two platforms integrate differently — Claude rewrites the Bash command to
-run through ``wrap.py`` (PreToolUse), while Antigravity compresses captured tool
-output (AfterTool) — but the *decision* of what to compress and the
-*bookkeeping* afterwards (audit log, savings, mismatch events) are identical.
-This module centralizes both so the two entry points stay in lock-step.
+The core adapts a compression backend to the result consumed by both hosts.
+Routing policy and optional telemetry have separate owners; the historical
+recording functions remain available here for integration compatibility.
+Importing or using compression alone does not initialize audit or tracking I/O.
 """
 
 from __future__ import annotations
 
 import logging
-import logging.handlers
-import os
-from typing import NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
 
-import src
+from src import command_policy
 from src import engine as engine_lib
-from src import tracker as tracker_lib
+from src import telemetry
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 _log = logging.getLogger("token-saver.core")
 _log.addHandler(logging.NullHandler())
 
-# Always-on audit log (records processor + ratio, never output content), so
-# "why did this route to generic?" is answerable after the fact.  Rotated to
-# stay bounded; failures are non-fatal.
-_audit = logging.getLogger("token-saver.audit")
-_audit.setLevel(logging.INFO)
-if not _audit.handlers:
-    try:
-        _adir = src.data_dir()
-        os.makedirs(_adir, exist_ok=True)
-        _audit_handler = logging.handlers.RotatingFileHandler(
-            os.path.join(_adir, "audit.log"), maxBytes=1_000_000, backupCount=1
-        )
-        _audit_handler.setFormatter(
-            logging.Formatter("%(asctime)s %(message)s")
-        )
-        _audit.addHandler(_audit_handler)
-    # This best-effort boundary must not block the host command or hook.
-    # pylint: disable-next=broad-exception-caught
-    except Exception:
-        _audit.addHandler(logging.NullHandler())
+# Preserve the public recording entry points while keeping their disk and
+# database lifecycle in the telemetry adapter.
+# pylint: disable=invalid-name
+audit_log = telemetry.audit_log
+record_saving = telemetry.record_saving
+record_mismatches = telemetry.record_mismatches
+# pylint: enable=invalid-name
+
+
+class Compressor(Protocol):
+    """Compression and observation contract needed by platform integrations.
+
+    Implementations never execute the command label. Metadata describes only
+    the most recent call; it must not contain captured output or command text.
+    """
+
+    @property
+    def last_event(self) -> Mapping[str, Any]:
+        """Return the most recent routing, size, and redaction metadata."""
+
+    def compress(
+        self, command: str, output: str, *, exit_code: int | None = None
+    ) -> tuple[str, str, bool]:
+        """Return output, processor name, and whether the output changed."""
 
 
 class CompressResult(NamedTuple):
@@ -80,9 +84,8 @@ class CompressResult(NamedTuple):
 def should_compress(command: str) -> bool:
     """Whether ``command`` is eligible for compression (shared gate).
 
-    Delegates to the PreToolUse decision logic so Claude and Antigravity make
-    the same call.  Imported lazily to avoid a src->scripts import at module
-    load.
+    Delegates to the shared runtime policy so Claude and Antigravity make
+    the same call without importing either platform adapter.
 
     Args:
         command: Shell command text associated with the captured output.
@@ -90,18 +93,14 @@ def should_compress(command: str) -> bool:
     Returns:
         Whether the shared hook eligibility rules allow compression.
     """
-    # Avoid loading the scripts adapter while importing the runtime core.
-    # pylint: disable-next=import-outside-toplevel
-    from scripts import hook_pretool  # noqa: PLC0415
-
-    return hook_pretool.is_compressible(command)
+    return command_policy.is_compressible(command)
 
 
 def compress(
     command: str,
     output: str,
     *,
-    engine: engine_lib.CompressionEngine | None = None,
+    engine: Compressor | None = None,
     exit_code: int | None = None,
 ) -> CompressResult:
     """Compress captured output and fall back when a processor raises.
@@ -119,7 +118,8 @@ def compress(
         Compressed text and routing/size metadata, with passthrough on a
         processor error.
     """
-    engine = engine or engine_lib.CompressionEngine()
+    if engine is None:
+        engine = engine_lib.CompressionEngine()
     try:
         compressed, processor_name, was_compressed = engine.compress(
             command, output, exit_code=exit_code
@@ -143,97 +143,6 @@ def compress(
         original_len=len(output),
         compressed_len=len(compressed),
     )
-
-
-def audit_log(
-    command: str, processor: str, original_len: int, compressed_len: int
-) -> None:
-    """Append a single audit line (no output content) — best effort.
-
-    Args:
-        command: Shell command text associated with the captured output.
-        processor: Stable name of the processor that handled the output.
-        original_len: Original output length in characters.
-        compressed_len: Compressed output length in characters.
-    """
-    try:
-        ratio = (
-            ((original_len - compressed_len) / original_len * 100)
-            if original_len > 0
-            else 0.0
-        )
-        _audit.info(
-            "processor=%s original=%d compressed=%d ratio=%.1f%% cmd=%r",
-            processor,
-            original_len,
-            compressed_len,
-            ratio,
-            command[:120],
-        )
-    # This best-effort boundary must not block the host command or hook.
-    # pylint: disable-next=broad-exception-caught
-    except Exception:
-        _log.warning("Audit logging failed")
-
-
-def record_saving(
-    command: str,
-    processor: str,
-    original_len: int,
-    compressed_len: int,
-    platform: str,
-) -> None:
-    """Record a savings row — best effort.
-
-    Args:
-        command: Shell command text associated with the captured output.
-        processor: Stable name of the processor that handled the output.
-        original_len: Original output length in characters.
-        compressed_len: Compressed output length in characters.
-        platform: Name of the host integration recording the event.
-    """
-    try:
-        tracker = tracker_lib.SavingsTracker()
-        tracker.record_saving(
-            command=command,
-            processor=processor,
-            original_size=original_len,
-            compressed_size=compressed_len,
-            platform=platform,
-        )
-        tracker.close()
-    # This best-effort boundary must not block the host command or hook.
-    # pylint: disable-next=broad-exception-caught
-    except Exception:
-        _log.warning("Tracking failed")
-
-
-def record_mismatches(items: list[tuple[str, str, int]], platform: str) -> None:
-    """Record processor-mismatch events in one tracker session — best effort.
-
-    Each item is (command, attempted_processor, original_len).
-
-    Args:
-        items: Command, attempted processor, and original character-count
-            tuples.
-        platform: Name of the host integration recording the event.
-    """
-    if not items:
-        return
-    try:
-        tracker = tracker_lib.SavingsTracker()
-        for command, processor, original_len in items:
-            tracker.record_mismatch(
-                command=command,
-                processor=processor,
-                original_size=original_len,
-                platform=platform,
-            )
-        tracker.close()
-    # This best-effort boundary must not block the host command or hook.
-    # pylint: disable-next=broad-exception-caught
-    except Exception:
-        _log.warning("Mismatch tracking failed")
 
 
 def record_result(result: CompressResult, command: str, platform: str) -> None:

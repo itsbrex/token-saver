@@ -156,6 +156,22 @@ and configuration tests, never the developer's real profile.
 
 ---
 
+## Architecture changes
+
+Follow the [architecture contracts](docs/architecture.md) when extending the
+runtime. Keep command-family parsing in processors, eligibility in
+`src/command_policy.py`, shell execution in adapters, optional writes in
+`src/telemetry.py`, storage in its concrete stores, and presentation in CLI or
+pure formatting functions. Comparison rules belong in `src/diagnostics.py` and
+must be shared by display and detail-preservation decisions.
+
+Prefer explicit dependencies at a real replacement or resource boundary.
+Preserve historical APIs with small compatibility facades when moving code.
+Keep imports free of filesystem/database initialization. Exercise meaningful
+failure paths and prove installed-tree imports when adding a runtime module.
+Do not add an abstract interface simply to forward a function call; the existing
+small contracts cover processor discovery, compression, policy, and recording.
+
 ## Adding a new processor
 
 Create a processor module in `src/processors/` and it will be automatically

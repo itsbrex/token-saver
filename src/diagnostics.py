@@ -15,6 +15,7 @@
 import dataclasses
 import re
 import shlex
+from typing import Literal
 
 from src import shell_syntax
 
@@ -59,6 +60,68 @@ class Snapshot:
     diagnostics: tuple[Diagnostic, ...]
     passed: tuple[str, ...] = ()
     context: str = ""
+
+
+@dataclasses.dataclass(frozen=True)
+class Change:
+    """One classified observation in a comparison between complete runs.
+
+    Attributes:
+        diagnostic: Current diagnostic, or the prior one when absent now.
+        status: Exact comparison outcome. An absent diagnostic is only PASSED
+            when the current snapshot explicitly supplies that evidence.
+    """
+
+    diagnostic: Diagnostic
+    status: Literal["NEW", "CHANGED", "UNCHANGED", "PASSED", "NOT OBSERVED"]
+
+    @property
+    def needs_detail(self) -> bool:
+        """Whether omitting current detail would lose diagnostic evidence."""
+        return self.status in ("NEW", "CHANGED")
+
+
+def compare(
+    snapshot: Snapshot, previous: Snapshot | None = None
+) -> tuple[Change, ...]:
+    """Classify sanitized observations without formatting or retaining them.
+
+    Identity, summary and full detail must all match to permit elision.
+    Current diagnostics retain their order, followed by missing diagnostics
+    in prior order. Different command families never form a valid baseline.
+    Run summaries and context are independent and remain the caller's
+    responsibility to present for every run.
+
+    Args:
+        snapshot: Validated observations from the current command execution.
+        previous: Validated baseline from the same comparison scope, if any.
+
+    Returns:
+        Immutable outcomes shared by presentation and detail-preservation
+        decisions. Explicit passes only describe absent prior diagnostics.
+    """
+    old = {}
+    if previous is not None and previous.family == snapshot.family:
+        old = {item.identifier: item for item in previous.diagnostics}
+    changes = []
+    current = set()
+    for item in snapshot.diagnostics:
+        current.add(item.identifier)
+        before = old.get(item.identifier)
+        if before == item:
+            changes.append(Change(item, "UNCHANGED"))
+        elif before is not None:
+            changes.append(Change(item, "CHANGED"))
+        else:
+            changes.append(Change(item, "NEW"))
+    for identifier, item in old.items():
+        if identifier in current:
+            continue
+        if identifier in snapshot.passed:
+            changes.append(Change(item, "PASSED"))
+        else:
+            changes.append(Change(item, "NOT OBSERVED"))
+    return tuple(changes)
 
 
 def command_arguments(command: str, names: tuple[str, ...]) -> list[str] | None:

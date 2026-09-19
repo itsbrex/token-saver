@@ -20,6 +20,40 @@ import time
 
 import src
 from src import config
+from src import stats_formatting
+
+_SCHEMA = """
+    CREATE TABLE IF NOT EXISTS savings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp REAL NOT NULL,
+        session_id TEXT NOT NULL,
+        command TEXT NOT NULL,
+        processor TEXT NOT NULL,
+        original_size INTEGER NOT NULL,
+        compressed_size INTEGER NOT NULL,
+        platform TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS sessions (
+        session_id TEXT PRIMARY KEY,
+        first_seen REAL NOT NULL,
+        last_seen REAL NOT NULL,
+        total_original INTEGER DEFAULT 0,
+        total_compressed INTEGER DEFAULT 0,
+        command_count INTEGER DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS mismatches (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp REAL NOT NULL,
+        session_id TEXT NOT NULL,
+        command TEXT NOT NULL,
+        processor TEXT NOT NULL,
+        original_size INTEGER NOT NULL,
+        platform TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_savings_session ON savings(session_id);
+    CREATE INDEX IF NOT EXISTS idx_savings_timestamp ON savings(timestamp);
+    CREATE INDEX IF NOT EXISTS idx_mismatches_ts ON mismatches(timestamp);
+"""
 
 
 class SavingsTracker:
@@ -164,81 +198,15 @@ class SavingsTracker:
             self.conn.execute("PRAGMA journal_mode=WAL")
 
     def _init_db(self):
-        """Create tracking tables and recover a corrupt schema once."""
+        """Create all tables and indexes with one schema, including recovery."""
         with self._lock:
             try:
-                self.conn.executescript("""
-                    CREATE TABLE IF NOT EXISTS savings (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        timestamp REAL NOT NULL,
-                        session_id TEXT NOT NULL,
-                        command TEXT NOT NULL,
-                        processor TEXT NOT NULL,
-                        original_size INTEGER NOT NULL,
-                        compressed_size INTEGER NOT NULL,
-                        platform TEXT NOT NULL
-                    );
-                    CREATE TABLE IF NOT EXISTS sessions (
-                        session_id TEXT PRIMARY KEY,
-                        first_seen REAL NOT NULL,
-                        last_seen REAL NOT NULL,
-                        total_original INTEGER DEFAULT 0,
-                        total_compressed INTEGER DEFAULT 0,
-                        command_count INTEGER DEFAULT 0
-                    );
-                    CREATE TABLE IF NOT EXISTS mismatches (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        timestamp REAL NOT NULL,
-                        session_id TEXT NOT NULL,
-                        command TEXT NOT NULL,
-                        processor TEXT NOT NULL,
-                        original_size INTEGER NOT NULL,
-                        platform TEXT NOT NULL
-                    );
-                    CREATE INDEX IF NOT EXISTS idx_savings_session
-                        ON savings(session_id);
-                    CREATE INDEX IF NOT EXISTS idx_savings_timestamp
-                        ON savings(timestamp);
-                    CREATE INDEX IF NOT EXISTS idx_mismatches_ts
-                        ON mismatches(timestamp);
-                """)
+                self.conn.executescript(_SCHEMA)
             except sqlite3.DatabaseError:
                 # Corrupted DB — recreate (drop WAL/SHM sidecars too)
-                self.conn.close()
                 self._remove_db_files()
-                self.conn = sqlite3.connect(
-                    self._db_path, timeout=10, check_same_thread=False
-                )
-                self.conn.row_factory = sqlite3.Row
-                self.conn.executescript("""
-                    CREATE TABLE savings (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        timestamp REAL NOT NULL,
-                        session_id TEXT NOT NULL,
-                        command TEXT NOT NULL,
-                        processor TEXT NOT NULL,
-                        original_size INTEGER NOT NULL,
-                        compressed_size INTEGER NOT NULL,
-                        platform TEXT NOT NULL
-                    );
-                    CREATE TABLE sessions (
-                        session_id TEXT PRIMARY KEY,
-                        first_seen REAL NOT NULL,
-                        last_seen REAL NOT NULL,
-                        total_original INTEGER DEFAULT 0,
-                        total_compressed INTEGER DEFAULT 0,
-                        command_count INTEGER DEFAULT 0
-                    );
-                    CREATE TABLE mismatches (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        timestamp REAL NOT NULL,
-                        session_id TEXT NOT NULL,
-                        command TEXT NOT NULL,
-                        processor TEXT NOT NULL,
-                        original_size INTEGER NOT NULL,
-                        platform TEXT NOT NULL
-                    );
-                """)
+                self._open_connection()
+                self.conn.executescript(_SCHEMA)
 
     def _maybe_prune(self):
         """Prune old records if the DB has grown."""
@@ -541,7 +509,9 @@ class SavingsTracker:
             A rounded token estimate using the configured characters-per-token
             ratio.
         """
-        return max(1, round(n / config.get("chars_per_token"))) if n > 0 else 0
+        return stats_formatting.estimate_tokens(
+            n, config.get("chars_per_token")
+        )
 
     @staticmethod
     def _format_tokens(n: int) -> str:
@@ -553,43 +523,19 @@ class SavingsTracker:
         Returns:
             Human-readable estimated-token text with a unit suffix.
         """
-        if n < 1_000:
-            return f"{n} tokens"
-        if n < 1_000_000:
-            return f"{n / 1_000:.1f}k tokens"
-        return f"{n / 1_000_000:.1f}M tokens"
+        return stats_formatting.format_tokens(n)
 
     def format_stats_message(self) -> str:
-        """Format a human-readable stats summary.
+        """Preserve the historical summary API through the presentation module.
 
         Returns:
             One line summarizing lifetime and current-session estimated savings.
         """
-        lifetime = self.get_lifetime_stats()
-        session = self.get_session_stats()
-
-        parts = ["[token-saver]"]
-
-        if lifetime["commands"] > 0:
-            saved_tokens = self._chars_to_tokens(lifetime["saved"])
-            parts.append(
-                f"Lifetime: {lifetime['commands']} cmds, "
-                f"{self._format_tokens(saved_tokens)} saved "
-                f"({lifetime['ratio']}%)"
-            )
-
-        if session["commands"] > 0:
-            saved_tokens = self._chars_to_tokens(session["saved"])
-            parts.append(
-                f"Session: {session['commands']} cmds, "
-                f"{self._format_tokens(saved_tokens)} saved "
-                f"({session['ratio']}%)"
-            )
-
-        if lifetime["commands"] == 0:
-            parts.append("Ready. No compressions recorded yet.")
-
-        return " | ".join(parts)
+        return stats_formatting.format_stats_message(
+            self.get_lifetime_stats(),
+            self.get_session_stats(),
+            chars_per_token=config.get("chars_per_token"),
+        )
 
     def close(self):
         """Close the SQLite connection without surfacing cleanup errors."""

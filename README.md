@@ -258,8 +258,12 @@ For a sourced comparison with RTK and Context Mode, including integration caveat
 
 ### Architecture
 
-The [architecture guide](docs/architecture.md) describes the processor registry,
-injectable engine policy, quality evaluation, storage and platform adapters.
+**Built around explicit SOLID boundaries.** Processors parse output, a shared
+policy decides command eligibility, adapters execute commands, and dedicated
+modules own storage and presentation. Delta comparison and statistics formatting
+are pure functions; engine dependencies and telemetry writers can be supplied
+independently. The [architecture guide](docs/architecture.md) documents the
+contracts, compatibility guarantees, tests, and remaining couplings.
 
 ```
 CLI command  -->  Specialized processor  -->  Compressed output
