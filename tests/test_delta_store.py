@@ -248,6 +248,38 @@ def test_rejects_nonregular_database(tmp_path):
         delta_store.Store(str(tmp_path))
 
 
+@pytest.mark.parametrize("existing", ["directory", "file", "missing"])
+def test_exclusive_create_distinguishes_windows_directory_access_error(
+    tmp_path, monkeypatch, existing
+):
+    database = tmp_path / "snapshots.sqlite3"
+    if existing == "directory":
+        database.mkdir()
+    elif existing == "file":
+        database.write_bytes(b"untouched")
+    original_open = delta_store.os.open
+    denied = PermissionError("synthetic access denial")
+
+    def deny_database_create(path, *args, **kwargs):
+        if str(path) == str(database):
+            raise denied
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(delta_store.os, "open", deny_database_create)
+    if existing == "directory":
+        with pytest.raises(ValueError, match="Unsafe Delta data file"):
+            delta_store.Store(str(tmp_path))
+        assert database.is_dir()
+    else:
+        with pytest.raises(PermissionError) as failure:
+            delta_store.Store(str(tmp_path))
+        assert failure.value is denied
+        if existing == "file":
+            assert database.read_bytes() == b"untouched"
+        else:
+            assert not database.exists()
+
+
 def test_rejects_hardlinked_database_without_changing_target(tmp_path):
     directory = tmp_path / "delta"
     directory.mkdir()

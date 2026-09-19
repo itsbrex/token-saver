@@ -70,9 +70,20 @@ def test_actual_pytest_repeats_changes_and_detail_retrieval(tmp_path):
     )
     # The wrapper uses Git Bash on Windows, so its command needs POSIX paths
     # as well as POSIX quoting (single quotes preserve backslashes literally).
-    executable = (
-        sys.executable.replace("\\", "/") if os.name == "nt" else sys.executable
-    )
+    executable = sys.executable.replace("\\", "/")
+    if os.name != "nt":
+        # Exercise Windows-style routing on every CI platform, including the
+        # quoted-space path that ordinary POSIX interpreter locations miss.
+        # Invoke the original interpreter explicitly: a relocated symlink can
+        # lose its virtual environment and therefore its pytest installation.
+        launcher = tmp_path / "Python tools" / "python.exe"
+        launcher.parent.mkdir()
+        launcher.write_text(
+            f'#!/bin/sh\nexec {shlex.quote(sys.executable)} "$@"\n',
+            encoding="utf-8",
+        )
+        launcher.chmod(0o700)
+        executable = str(launcher)
     command = shlex.join([executable, "-m", "pytest", "-v", "--color=no"])
     results = []
     for number in range(3):

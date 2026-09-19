@@ -196,7 +196,34 @@ _PATH_PREFIX_RE = re.compile(r"^(\S*/)(?=\S)")
 
 
 def _normalize_cmd(cmd: str) -> str:
-    """Strip leading path prefix for pattern matching."""
+    """Normalize leading paths and Python launchers for matching exclusions.
+
+    Decode Python executable quoting so Windows paths with spaces use the same
+    recursion and interactive-mode guards as bare POSIX Python names. Keep the
+    argument suffix unchanged: unquoting it would turn literal text into shell
+    operators. Other executable families retain their existing path handling.
+    """
+    stripped = cmd.lstrip()
+    end = next(
+        (
+            index
+            for index, char in src.shell_syntax.iter_unquoted(stripped)
+            if char.isspace()
+        ),
+        len(stripped),
+    )
+    token = stripped[:end]
+    if "$" in token or "`" in token:
+        return cmd
+    try:
+        words = shlex.split(token)
+    except ValueError:
+        return cmd
+    if len(words) != 1:
+        return cmd
+    executable = words[0].replace("\\", "/").rsplit("/", 1)[-1]
+    if re.fullmatch(r"python\d?(?:\.\d+)*(?:\.exe)?", executable):
+        return executable.removesuffix(".exe") + stripped[end:]
     return _PATH_PREFIX_RE.sub("", cmd)
 
 

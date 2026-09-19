@@ -17,8 +17,8 @@ import abc
 from src import diagnostics
 
 # Matches any Python invocation: python, python3, python3.11,
-# .venv/bin/python3, /usr/bin/python, etc.
-PYTHON_CMD = r"(?:\S+/)?python[23]?(?:\.\d+)?"
+# .venv/bin/python3, /usr/bin/python, C:/Python/python.exe, etc.
+PYTHON_CMD = r"(?:\S+/)?python[23]?(?:\.\d+)?(?:\.exe)?"
 
 
 class Processor(abc.ABC):

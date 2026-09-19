@@ -63,6 +63,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   execution counts, comparison, and targeted retrieval outside the checkout.
   Installer tests isolate inherited storage/import settings and Windows e2e
   commands use POSIX-compatible executable paths.
+- Windows Python executable routing recognizes `.exe` paths for supported
+  module commands while retaining interactive and recursive-wrapper exclusions.
+  Delta storage consistently rejects directories used as database files even
+  when Windows reports an access error instead of an existing-file error.
 - Prevented critical-line recovery and compression fallback from restoring already-redacted secret values; small environment outputs now redact sensitive assignments too.
 - Resolved savings database paths per tracker instance and honored `TOKEN_SAVER_DB_DIR` consistently, with tests isolated from the developer profile.
 

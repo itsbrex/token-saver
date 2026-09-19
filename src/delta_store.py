@@ -57,6 +57,12 @@ def _prepare_database(directory: str) -> str:
         descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     except FileExistsError:
         _private_file(path)
+    except PermissionError:
+        # Windows reports EACCES, not EEXIST, for an existing directory.
+        # Preserve genuine access failures for regular or missing files.
+        if os.path.isdir(path):
+            raise ValueError("Unsafe Delta data file") from None
+        raise
     else:
         os.close(descriptor)
     for suffix in ("-journal", "-wal", "-shm"):
